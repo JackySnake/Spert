@@ -12,6 +12,11 @@ from spert.entities import Document, Dataset, EntityType
 from spert.input_reader import JsonInputReader
 from spert.opt import jinja2
 
+# add for chinese
+import sys
+import codecs
+sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
+
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
 
 

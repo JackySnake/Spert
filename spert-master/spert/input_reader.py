@@ -14,7 +14,8 @@ from spert.entities import Dataset, EntityType, RelationType, Entity, Relation, 
 class BaseInputReader(ABC):
     def __init__(self, types_path: str, tokenizer: BertTokenizer, neg_entity_count: int = None,
                  neg_rel_count: int = None, max_span_size: int = None, logger: Logger = None):
-        types = json.load(open(types_path), object_pairs_hook=OrderedDict)  # entity + relation types
+        # types = json.load(open(types_path), object_pairs_hook=OrderedDict)  # entity + relation types
+        types = json.load(open(types_path, encoding='utf-8'), object_pairs_hook=OrderedDict)  # add encoding for ch
 
         self._entity_types = OrderedDict()
         self._idx2entity_type = OrderedDict()
@@ -141,9 +142,16 @@ class JsonInputReader(BaseInputReader):
         self._context_size = self._calc_context_size(self._datasets.values())
 
     def _parse_dataset(self, dataset_path, dataset):
-        documents = json.load(open(dataset_path))
+        # documents = json.load(open(dataset_path))
+        documents = json.load(open(dataset_path, encoding='utf-8')) #add encoding for baidu-ch
         for document in tqdm(documents, desc="Parse dataset '%s'" % dataset.label):
-            self._parse_document(document, dataset)
+            try: #add for Error 
+                self._parse_document(document, dataset)
+            except IndexError:
+                print(dataset.label + " IndexError:" + str(document['orig_id']))
+            # else:
+            #     pass
+           
 
     def _parse_document(self, doc, dataset) -> Document:
         jtokens = doc['tokens']

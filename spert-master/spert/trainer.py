@@ -40,7 +40,8 @@ class BaseTrainer:
         self._logger = logging.getLogger()
         util.reset_logger(self._logger)
 
-        file_handler = logging.FileHandler(os.path.join(self._log_path, 'all.log'))
+        # file_handler = logging.FileHandler(os.path.join(self._log_path, 'all.log'))
+        file_handler = logging.FileHandler(os.path.join(self._log_path, 'all.log'), encoding='utf-8') # add encoding for chinese
         file_handler.setFormatter(log_formatter)
         self._logger.addHandler(file_handler)
 

@@ -112,11 +112,25 @@ class SpERTTrainer(BaseTrainer):
             # train epoch
             self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
 
+            if (epoch +1) % 10 == 0:
+                extra = dict(epoch=epoch, updates_epoch=updates_epoch, epoch_iteration=0)
+                global_iteration = epoch+1 * updates_epoch
+                self._save_model(self._save_path, model, self._tokenizer, global_iteration,
+                                optimizer=optimizer if self.args.save_optimizer else None, extra=extra,
+                                include_iteration=False, name= str(epoch)+'_model')
+
+                self._logger.info("Logged in: %s" % self._log_path)
+                self._logger.info("Saved in: %s" % self._save_path)
+                self._summary_writer.close()
+
+
             # eval validation sets
             if not args.final_eval or (epoch == args.epochs - 1):
                 self._eval(model, validation_dataset, input_reader, epoch + 1, updates_epoch)
 
         # save final model
+
+
         extra = dict(epoch=args.epochs, updates_epoch=updates_epoch, epoch_iteration=0)
         global_iteration = args.epochs * updates_epoch
         self._save_model(self._save_path, model, self._tokenizer, global_iteration,
