@@ -39,7 +39,7 @@ class SpERT(BertPreTrainedModel):
         self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
                                   hidden_size=config.hidden_size // 2,
                                   num_layers=2,
-                                  dropout=0.5,
+                                  #dropout=0.5,
                                   bidirectional=True)
         # modify on ver 1.1 end                                  
 
@@ -102,7 +102,9 @@ class SpERT(BertPreTrainedModel):
         context_masks = context_masks.float()
         h = self.bert(input_ids=encodings, attention_mask=context_masks)[0]
 
+        # del on ver 1.1 for entity start
         entity_masks = entity_masks.float()
+        # del on ver 1.1 for entity end
         batch_size = encodings.shape[0]
         ctx_size = context_masks.shape[-1]
 
@@ -112,9 +114,12 @@ class SpERT(BertPreTrainedModel):
 
         # ignore entity candidates that do not constitute an actual entity for relations (based on classifier)
         relations, rel_masks, rel_sample_masks = self._filter_spans(entity_clf, entity_spans,
-                                                                    entity_sample_masks, ctx_size)
-        rel_masks = rel_masks.float()
-        rel_sample_masks = rel_sample_masks.float()
+        
+        # modify on ver 1.1 for entity start                                                            entity_sample_masks, ctx_size)
+        # rel_masks = rel_masks.float()
+        # rel_sample_masks = rel_sample_masks.float()
+        rel_sample_masks = rel_sample_masks.float().unsqueeze(-1)
+        # del on ver 1.1 for entity end
         h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
         rel_clf = torch.zeros([batch_size, relations.shape[1], self._relation_types]).to(
             self.rel_classifier.weight.device)
