@@ -7,7 +7,7 @@ from torch.nn import DataParallel
 from torch.optim import Optimizer
 import transformers
 from torch.utils.data import DataLoader
-from transformers import AdamW
+from transformers import AdamW, BertConfig
 from transformers import BertTokenizer
 
 from spert import models
@@ -71,11 +71,14 @@ class SpERTTrainer(BaseTrainer):
         model_class = models.get_model(self.args.model_type)
 
         # load model
+        config = BertConfig.from_pretrained(self.args.model_path, cache_dir=self.args.cache_path)
+        util.check_version(config, model_class, self.args.model_path)
+
+        config.spert_version = model_class.VERSION
         model = model_class.from_pretrained(self.args.model_path,
-                                            cache_dir=self.args.cache_path,
+                                            config=config,
                                             # SpERT model parameters
                                             cls_token=self._tokenizer.convert_tokens_to_ids('[CLS]'),
-                                            # no node for 'none' class
                                             relation_types=input_reader.relation_type_count - 1,
                                             entity_types=input_reader.entity_type_count,
                                             max_pairs=self.args.max_pairs,
@@ -112,25 +115,11 @@ class SpERTTrainer(BaseTrainer):
             # train epoch
             self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
 
-            if (epoch +1) % 10 == 0:
-                extra = dict(epoch=epoch, updates_epoch=updates_epoch, epoch_iteration=0)
-                global_iteration = epoch+1 * updates_epoch
-                self._save_model(self._save_path, model, self._tokenizer, global_iteration,
-                                optimizer=optimizer if self.args.save_optimizer else None, extra=extra,
-                                include_iteration=False, name= str(epoch)+'_model')
-
-                self._logger.info("Logged in: %s" % self._log_path)
-                self._logger.info("Saved in: %s" % self._save_path)
-                self._summary_writer.close()
-
-
             # eval validation sets
             if not args.final_eval or (epoch == args.epochs - 1):
                 self._eval(model, validation_dataset, input_reader, epoch + 1, updates_epoch)
 
         # save final model
-
-
         extra = dict(epoch=args.epochs, updates_epoch=updates_epoch, epoch_iteration=0)
         global_iteration = args.epochs * updates_epoch
         self._save_model(self._save_path, model, self._tokenizer, global_iteration,
@@ -139,7 +128,7 @@ class SpERTTrainer(BaseTrainer):
 
         self._logger.info("Logged in: %s" % self._log_path)
         self._logger.info("Saved in: %s" % self._save_path)
-        self._summary_writer.close()
+        self._close_summary_writer()
 
     def eval(self, dataset_path: str, types_path: str, input_reader_cls: BaseInputReader):
         args = self.args
@@ -160,12 +149,13 @@ class SpERTTrainer(BaseTrainer):
         # create model
         model_class = models.get_model(self.args.model_type)
 
-        # load model
+        config = BertConfig.from_pretrained(self.args.model_path, cache_dir=self.args.cache_path)
+        util.check_version(config, model_class, self.args.model_path)
+
         model = model_class.from_pretrained(self.args.model_path,
-                                            cache_dir=self.args.cache_path,
-                                            # additional model parameters
+                                            config=config,
+                                            # SpERT model parameters
                                             cls_token=self._tokenizer.convert_tokens_to_ids('[CLS]'),
-                                            # no node for 'none' class
                                             relation_types=input_reader.relation_type_count - 1,
                                             entity_types=input_reader.entity_type_count,
                                             max_pairs=self.args.max_pairs,
@@ -179,7 +169,7 @@ class SpERTTrainer(BaseTrainer):
         self._eval(model, input_reader.get_dataset(dataset_label), input_reader)
 
         self._logger.info("Logged in: %s" % self._log_path)
-        self._summary_writer.close()
+        self._close_summary_writer()
 
     def _train_epoch(self, model: torch.nn.Module, compute_loss: Loss, optimizer: Optimizer, dataset: Dataset,
                      updates_epoch: int, epoch: int):
@@ -228,7 +218,7 @@ class SpERTTrainer(BaseTrainer):
 
         # create evaluator
         evaluator = Evaluator(dataset, input_reader, self._tokenizer,
-                              self.args.rel_filter_threshold, self._predictions_path,
+                              self.args.rel_filter_threshold, self.args.no_overlapping, self._predictions_path,
                               self._examples_path, self.args.example_count, epoch, dataset.label)
 
         # create data loader
@@ -260,7 +250,7 @@ class SpERTTrainer(BaseTrainer):
         self._log_eval(*ner_eval, *rel_eval, *rel_nec_eval,
                        epoch, iteration, global_iteration, dataset.label)
 
-        if self.args.store_predictions:
+        if self.args.store_predictions and not self.args.no_overlapping:
             evaluator.store_predictions()
 
         if self.args.store_examples:
