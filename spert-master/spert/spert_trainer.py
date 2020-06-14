@@ -88,9 +88,9 @@ class SpERTTrainer(BaseTrainer):
 
         # SpERT is currently optimized on a single GPU and not thoroughly tested in a multi GPU setup
         # If you still want to train SpERT on multiple GPUs, uncomment the following lines
-        # # parallelize model
-        # if self._device.type != 'cpu':
-        #     model = torch.nn.DataParallel(model)
+        # parallelize model
+        if self._device.type != 'cpu':
+            model = torch.nn.DataParallel(model)
 
         model.to(self._device)
 
@@ -115,6 +115,19 @@ class SpERTTrainer(BaseTrainer):
             # train epoch
             self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
 
+            # add for eval in every X epoch
+            if (epoch +1) % 10 == 0:
+                extra = dict(epoch=epoch, updates_epoch=updates_epoch, epoch_iteration=0)
+                global_iteration = epoch+1 * updates_epoch
+                self._save_model(self._save_path, model, self._tokenizer, global_iteration,
+                                optimizer=optimizer if self.args.save_optimizer else None, extra=extra,
+                                include_iteration=False, name= str(epoch)+'_model')
+
+                self._logger.info("Logged in: %s" % self._log_path)
+                self._logger.info("Saved in: %s" % self._save_path)
+                self._summary_writer.close()
+            # add for eval in every X epoch end
+            
             # eval validation sets
             if not args.final_eval or (epoch == args.epochs - 1):
                 self._eval(model, validation_dataset, input_reader, epoch + 1, updates_epoch)

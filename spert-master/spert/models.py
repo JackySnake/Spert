@@ -113,9 +113,9 @@ class SpERT(BertPreTrainedModel):
         entity_clf, entity_spans_pool = self._classify_entities(encodings, h, entity_masks, size_embeddings)
 
         # ignore entity candidates that do not constitute an actual entity for relations (based on classifier)
-        relations, rel_masks, rel_sample_masks = self._filter_spans(entity_clf, entity_spans,
+        relations, rel_masks, rel_sample_masks = self._filter_spans(entity_clf, entity_spans, entity_sample_masks, ctx_size)
         
-        # modify on ver 1.1 for entity start                                                            entity_sample_masks, ctx_size)
+        # modify on ver 1.1 for entity start                    
         # rel_masks = rel_masks.float()
         # rel_sample_masks = rel_sample_masks.float()
         rel_sample_masks = rel_sample_masks.float().unsqueeze(-1)
