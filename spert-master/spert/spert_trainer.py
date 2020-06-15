@@ -115,8 +115,8 @@ class SpERTTrainer(BaseTrainer):
             # train epoch
             self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
 
-            # add for eval in every X epoch
-            if (epoch +1) % 10 == 0:
+            # add for eval in every X epoch 
+            if (epoch +1) % 5 == 0:
                 extra = dict(epoch=epoch, updates_epoch=updates_epoch, epoch_iteration=0)
                 global_iteration = epoch+1 * updates_epoch
                 self._save_model(self._save_path, model, self._tokenizer, global_iteration,
