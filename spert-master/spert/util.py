@@ -134,12 +134,12 @@ def get_as_list(dic, key):
         return []
 
 
-def extend_tensor(tensor, extended_shape, fill=0):
+def extend_tensor(tensor, extended_shape, fill=0): # tensor向量，extended_shape最大长度
     tensor_shape = tensor.shape
 
-    extended_tensor = torch.zeros(extended_shape, dtype=tensor.dtype).to(tensor.device)
-    extended_tensor = extended_tensor.fill_(fill)
-
+    extended_tensor = torch.zeros(extended_shape, dtype=tensor.dtype).to(tensor.device) #全0的，最大长度的
+    extended_tensor = extended_tensor.fill_(fill) #用padding符填充
+    #tensor填充非padding的部分
     if len(tensor_shape) == 1:
         extended_tensor[:tensor_shape[0]] = tensor
     elif len(tensor_shape) == 2:
@@ -152,10 +152,10 @@ def extend_tensor(tensor, extended_shape, fill=0):
     return extended_tensor
 
 
-def padded_stack(tensors, padding=0):
-    dim_count = len(tensors[0].shape)
+def padded_stack(tensors, padding=0): # tensor是个list batch size长度，每个元素是一个tensor
+    dim_count = len(tensors[0].shape) # 获得tensor的维度数
 
-    max_shape = [max([t.shape[d] for t in tensors]) for d in range(dim_count)]
+    max_shape = [max([t.shape[d] for t in tensors]) for d in range(dim_count)] # 获得不同维度方向的最大维度数，0，1，2顺序记录
     padded_tensors = []
 
     for t in tensors:
