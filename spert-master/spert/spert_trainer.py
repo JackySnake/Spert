@@ -29,11 +29,12 @@ class SpERTTrainer(BaseTrainer):
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
 
+        # 分词器
         # byte-pair encoding
         self._tokenizer = BertTokenizer.from_pretrained(args.tokenizer_path,
                                                         do_lower_case=args.lowercase,
                                                         cache_dir=args.cache_path)
-
+        # 预测结果
         # path to export predictions to
         self._predictions_path = os.path.join(self._log_path, 'predictions_%s_epoch_%s.json')
 
@@ -52,25 +53,33 @@ class SpERTTrainer(BaseTrainer):
         self._init_eval_logging(valid_label)
 
         # read datasets
+        # types_path: task的三元组的schema
+        # self._tokenizer: 分词器
+        # args.neg_entity_count: 实体负样本数目
+        # args.neg_relation_count: 关系负样本数目
+        # args.max_span_size: span最大长度
+        # self._logger 
         input_reader = input_reader_cls(types_path, self._tokenizer, args.neg_entity_count,
                                         args.neg_relation_count, args.max_span_size, self._logger)
-        input_reader.read({train_label: train_path, valid_label: valid_path})
+        input_reader.read({train_label: train_path, valid_label: valid_path}) # 读取数据集，此时还未进行负采样, 保存到input_reader.datasets
         self._log_datasets(input_reader)
 
-        train_dataset = input_reader.get_dataset(train_label)
-        train_sample_count = train_dataset.document_count
-        updates_epoch = train_sample_count // args.train_batch_size
-        updates_total = updates_epoch * args.epochs
+        train_dataset = input_reader.get_dataset(train_label) # 训练集
+        train_sample_count = train_dataset.document_count # 样本数
+        updates_epoch = train_sample_count // args.train_batch_size # 计算迭代的更新参数的次数/每轮
+        updates_total = updates_epoch * args.epochs # 计算总的更新参数次数
 
-        validation_dataset = input_reader.get_dataset(valid_label)
+        validation_dataset = input_reader.get_dataset(valid_label) # 验证集
 
         self._logger.info("Updates per epoch: %s" % updates_epoch)
         self._logger.info("Updates total: %s" % updates_total)
 
+        #到这里读入的都是正样本，应该还没做负样本抽样
         # create model
-        model_class = models.get_model(self.args.model_type)
+        model_class = models.get_model(self.args.model_type) #获取模型
 
         # load model
+        # 这里可能才是真正的实例化
         config = BertConfig.from_pretrained(self.args.model_path, cache_dir=self.args.cache_path)
         util.check_version(config, model_class, self.args.model_path)
 
@@ -89,15 +98,21 @@ class SpERTTrainer(BaseTrainer):
         # SpERT is currently optimized on a single GPU and not thoroughly tested in a multi GPU setup
         # If you still want to train SpERT on multiple GPUs, uncomment the following lines
         # parallelize model
+        # 并行化
         if self._device.type != 'cpu':
             model = torch.nn.DataParallel(model)
 
         model.to(self._device)
 
+        # 优化器
+        # 设置了不更新偏差bias
+        # 创建了AdamW优化器
         # create optimizer
         optimizer_params = self._get_optimizer_params(model)
         optimizer = AdamW(optimizer_params, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
         # create scheduler
+        # torch.optim.lr_scheduler接口,是一种学习率调整策略，其中提供了基于多种epoch数目调整学习率的方法.
+        # 用一个Schedule把原始Optimizer装饰上，然后再输入一些相关参数，然后用这个Schedule做step()。
         scheduler = transformers.get_linear_schedule_with_warmup(optimizer,
                                                                  num_warmup_steps=args.lr_warmup * updates_total,
                                                                  num_training_steps=updates_total)
@@ -112,7 +127,8 @@ class SpERTTrainer(BaseTrainer):
 
         # train
         for epoch in range(args.epochs):
-            # train epoch
+            # train epoch 
+            # 训练每一轮
             self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
 
             # add for eval in every X epoch 
@@ -121,7 +137,9 @@ class SpERTTrainer(BaseTrainer):
                 global_iteration = epoch+1 * updates_epoch
                 self._save_model(self._save_path, model, self._tokenizer, global_iteration,
                                 optimizer=optimizer if self.args.save_optimizer else None, extra=extra,
-                                include_iteration=False, name= str(epoch)+'_model')
+                                include_iteration=False, name= str(epoch+1)+'_model')
+                
+                self._eval(model, validation_dataset, input_reader, epoch + 1, updates_epoch)
 
                 self._logger.info("Logged in: %s" % self._log_path)
                 self._logger.info("Saved in: %s" % self._save_path)
@@ -190,6 +208,8 @@ class SpERTTrainer(BaseTrainer):
 
         # create data loader
         dataset.switch_mode(Dataset.TRAIN_MODE)
+        # DataLoader加载数据，设定batchsize大小，并打乱数据，drop_last为true丢弃最后一个不足一个batch的数据，读取数据的进程num_workers,collate_fn是拼接多个样本为一个batch的方法
+        # 负样本抽样在这里做的，spert.entities.Dataset的get_item
         data_loader = DataLoader(dataset, batch_size=self.args.train_batch_size, shuffle=True, drop_last=True,
                                  num_workers=self.args.sampling_processes, collate_fn=sampling.collate_fn_padding)
 
@@ -269,6 +289,10 @@ class SpERTTrainer(BaseTrainer):
         if self.args.store_examples:
             evaluator.store_examples()
 
+#分别保存了需要优化的参数，不知道是为什么
+#返回optimizer_params，数组长度为2
+#optimizer_params[0],dict,长度2，保存no_decay以外的参数
+#optimizer_params[0],dict,长度2，保存no_decay的参数
     def _get_optimizer_params(self, model):
         param_optimizer = list(model.named_parameters())
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
