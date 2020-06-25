@@ -7,13 +7,15 @@ from transformers import BertPreTrainedModel
 from spert import sampling
 from spert import util
 
-# 获得特定的token的embedding
+# h 隐变量表示
+# x encoding 索引
 def get_token(h: torch.tensor, x: torch.tensor, token: int):
     """ Get specific token embedding (e.g. [CLS]) """
-    emb_size = h.shape[-1]
+    emb_size = h.shape[-1] #隐藏表示的长度
 
-    token_h = h.view(-1, emb_size)
-    flat = x.contiguous().view(-1)
+    token_h = h.view(-1, emb_size) # view,重整tensor的维度
+    flat = x.contiguous().view(-1) # contiguous()，返回一个内存连续的有相同数据的tensor，如果原tensor内存连续，则返回原tensor；维度变换之后，保持tensor连续
+                                   # 直接将encoidngs展平，1维，长度为（batch size*句子长度）
 
     # get contextualized embedding of given token
     token_h = token_h[flat == token, :]
@@ -42,6 +44,7 @@ class SpERT(BertPreTrainedModel):
 
         # layers 
 
+        # 建模entity
         # modify on imp start
         self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
                                   hidden_size=config.hidden_size // 2,
@@ -50,9 +53,10 @@ class SpERT(BertPreTrainedModel):
                                   bidirectional=True)
         # modify on imp end                                  
 
-        self.rel_classifier = nn.Linear(config.hidden_size * 3 + size_embedding * 2, relation_types)
-        self.entity_classifier = nn.Linear(config.hidden_size * 2 + size_embedding, entity_types)
-        self.size_embeddings = nn.Embedding(100, size_embedding)
+        self.rel_classifier = nn.Linear(config.hidden_size * 3 + size_embedding * 2, relation_types) # 关系分类
+        # self.entity_classifier = nn.Linear(config.hidden_size * 2 + size_embedding, entity_types) # entity分类
+        self.entity_classifier = nn.Linear(config.hidden_size + size_embedding, entity_types) # entity分类,不使用[CLS]全局表示
+        self.size_embeddings = nn.Embedding(100, size_embedding) # width embedding
         self.dropout = nn.Dropout(prop_drop)
 
         self._cls_token = cls_token
@@ -70,17 +74,24 @@ class SpERT(BertPreTrainedModel):
             for param in self.bert.parameters():
                 param.requires_grad = False
 
+    #
+    # encodings batch size*句子长度
+    # context_masks
+    # entity_masks
+    # entity_sizes
+    # relations
+    # rel_masks
     def _forward_train(self, encodings: torch.tensor, context_masks: torch.tensor, entity_masks: torch.tensor,
                        entity_sizes: torch.tensor, relations: torch.tensor, rel_masks: torch.tensor):
         # get contextualized token embeddings from last transformer layer
         context_masks = context_masks.float()
-        h = self.bert(input_ids=encodings, attention_mask=context_masks)[0]
+        h = self.bert(input_ids=encodings, attention_mask=context_masks)[0] # 预训练的输出表示
 
-        batch_size = encodings.shape[0]
+        batch_size = encodings.shape[0] # batch_size大小
 
         # classify entities
         size_embeddings = self.size_embeddings(entity_sizes)  # embed entity candidate sizes
-        entity_clf, entity_spans_pool = self._classify_entities(encodings, h, entity_masks, size_embeddings)
+        entity_clf, entity_spans_pool = self._classify_entities(encodings, h, entity_masks, size_embeddings) # batch那里为1，1*span数*句子长度
 
         # classify relations
         h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
@@ -139,21 +150,27 @@ class SpERT(BertPreTrainedModel):
     def _classify_entities(self, encodings, h, entity_masks, size_embeddings):
         # max pool entity candidate spans
         # mod on imp start
-        batch_size = entity_masks.shape[0]
-        span_num = entity_masks.shape[1]
-        embedding_size = h.shape[-1]
+        batch_size = entity_masks.shape[0] # batch 大小
+        span_num = entity_masks.shape[1] # span的长度
+        embedding_size = h.shape[-1] # 隐蔽表示embedding 大小
 
+        # entity_masks.unsqueeze(-1) 扩展维度, batch大小*大小候选span数*句子长*1（扩展维度）
+        # entity_masks.unsqueeze(-1) == 0 如果相等，对应的元素设为true。在这里，相当于是为了将entity_masks.unsqueeze(-1)的0，1互换, 即0代表span的位置
+        # (entity_masks.unsqueeze(-1) == 0).float() * (-1e30) 相乘，span位置元素为0，其他位置为-1e30
         m = (entity_masks.unsqueeze(-1) == 0).float() * (-1e30)
+        # m是转换后的向量
+        # h.unsqueeze(1) 扩展维度，batch大小*1（扩展维度）*句子长度*embedding大小
+        # h.unsqueeze(1).repeat(1, entity_masks.shape[1], 1, 1) 在第二个维度方向复制，batch大小*大小候选的span数*句子长度*embedding_size
         entity_spans_pool = m + h.unsqueeze(1).repeat(1, entity_masks.shape[1], 1, 1)
-
-        entity_whole_sentence = entity_spans_pool.permute(2, 0, 1, 3)
-
+        # 全句表示，实体，句子长度*batch大小*大小候选的span数*embedding_size
+        entity_whole_sentence = entity_spans_pool.permute(2, 0, 1, 3) #
+        # 句子长度 *  (batch_size * span_num) * embedding_size
         entity_whole_sentence = entity_whole_sentence.reshape([-1, batch_size * span_num, embedding_size])
 
         self.lstm_layer.flatten_parameters()
 
         output, (final_hidden_state, final_cell_state) = self.lstm_layer(entity_whole_sentence)
-
+        #
         final_hidden_state = final_hidden_state.reshape([final_hidden_state.shape[0], batch_size, span_num, -1])
 
         # concat [h-2, h-1]
@@ -161,11 +178,12 @@ class SpERT(BertPreTrainedModel):
 
         # mod on imp end
         # get cls token as candidate context representation
-        entity_ctx = get_token(h, encodings, self._cls_token)
+        # entity_ctx = get_token(h, encodings, self._cls_token) #不使用[CLS全局表示]
 
         # create candidate representations including context, max pooled span and size embedding
-        entity_repr = torch.cat([entity_ctx.unsqueeze(1).repeat(1, entity_spans_pool.shape[1], 1),
-                                 entity_spans_pool, size_embeddings], dim=2)
+        # entity_repr = torch.cat([entity_ctx.unsqueeze(1).repeat(1, entity_spans_pool.shape[1], 1),
+        #                          entity_spans_pool, size_embeddings], dim=2)
+        entity_repr = torch.cat([entity_spans_pool, size_embeddings], dim=2) #不使用[CLS全局表示]
         entity_repr = self.dropout(entity_repr)
 
         # classify entity candidates
