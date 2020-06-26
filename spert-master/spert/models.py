@@ -46,11 +46,16 @@ class SpERT(BertPreTrainedModel):
 
         # 建模entity
         # modify on imp start
+        # self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
+        #                           hidden_size=config.hidden_size // 2,
+        #                           num_layers=2,
+        #                           #dropout=0.5,
+        #                           bidirectional=True)
         self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
                                   hidden_size=config.hidden_size // 2,
-                                  num_layers=2,
+                                  num_layers=1,
                                   #dropout=0.5,
-                                  bidirectional=True)
+                                  bidirectional=True)                                  
         # modify on imp end                                  
 
         self.rel_classifier = nn.Linear(config.hidden_size * 3 + size_embedding * 2, relation_types) # 关系分类
