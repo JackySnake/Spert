@@ -46,16 +46,16 @@ class SpERT(BertPreTrainedModel):
 
         # 建模entity
         # modify on imp start
-        # self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
-        #                           hidden_size=config.hidden_size // 2,
-        #                           num_layers=2,
-        #                           #dropout=0.5,
-        #                           bidirectional=True)
         self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
                                   hidden_size=config.hidden_size // 2,
-                                  num_layers=1,
+                                  num_layers=2,
                                   #dropout=0.5,
-                                  bidirectional=True)                                  
+                                  bidirectional=True)
+        # self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
+        #                           hidden_size=config.hidden_size // 2,
+        #                           num_layers=1,
+        #                           #dropout=0.5,
+        #                           bidirectional=True)                                  
         # modify on imp end                                  
 
         self.rel_classifier = nn.Linear(config.hidden_size * 3 + size_embedding * 2, relation_types) # 关系分类
@@ -153,30 +153,50 @@ class SpERT(BertPreTrainedModel):
         return entity_clf, rel_clf, relations
 
     def _classify_entities(self, encodings, h, entity_masks, size_embeddings):
+        # entity_masks shape: batch大小*大小候选span数*句子长, span 对应的 句子长度 的向量，表示了实体在encoding中的位置
         # max pool entity candidate spans
         # mod on imp start
         batch_size = entity_masks.shape[0] # batch 大小
         span_num = entity_masks.shape[1] # span的长度
         embedding_size = h.shape[-1] # 隐蔽表示embedding 大小
 
-        # entity_masks.unsqueeze(-1) 扩展维度, batch大小*大小候选span数*句子长*1（扩展维度）
-        # entity_masks.unsqueeze(-1) == 0 如果相等，对应的元素设为true。在这里，相当于是为了将entity_masks.unsqueeze(-1)的0，1互换, 即0代表span的位置
-        # (entity_masks.unsqueeze(-1) == 0).float() * (-1e30) 相乘，span位置元素为0，其他位置为-1e30
-        m = (entity_masks.unsqueeze(-1) == 0).float() * (-1e30)
-        # m是转换后的向量
-        # h.unsqueeze(1) 扩展维度，batch大小*1（扩展维度）*句子长度*embedding大小
-        # h.unsqueeze(1).repeat(1, entity_masks.shape[1], 1, 1) 在第二个维度方向复制，batch大小*大小候选的span数*句子长度*embedding_size
-        entity_spans_pool = m + h.unsqueeze(1).repeat(1, entity_masks.shape[1], 1, 1)
-        # 全句表示，实体，句子长度*batch大小*大小候选的span数*embedding_size
-        entity_whole_sentence = entity_spans_pool.permute(2, 0, 1, 3) #
-        # 句子长度 *  (batch_size * span_num) * embedding_size
-        entity_whole_sentence = entity_whole_sentence.reshape([-1, batch_size * span_num, embedding_size])
+        #### 句子长度的LSTM输入    
+        # # entity_masks.unsqueeze(-1) 扩展维度, batch大小*大小候选span数*句子长*1（扩展维度）
+        # # entity_masks.unsqueeze(-1) == 0 如果相等，对应的元素设为true。在这里，相当于是为了将entity_masks.unsqueeze(-1)的0，1互换, 即0代表span的位置
+        # # (entity_masks.unsqueeze(-1) == 0).float() * (-1e30) 相乘，span位置元素为0，其他位置为-1e30
+        # m = (entity_masks.unsqueeze(-1) == 0).float() * (-1e30)
+        # # m是转换后的向量
+        # # h.unsqueeze(1) 扩展维度，batch大小*1（扩展维度）*句子长度*embedding大小
+        # # h.unsqueeze(1).repeat(1, entity_masks.shape[1], 1, 1) 在第二个维度方向复制，batch大小*大小候选的span数*句子长度*embedding_size
+        # entity_spans_pool = m + h.unsqueeze(1).repeat(1, entity_masks.shape[1], 1, 1)
+        # # 全句表示，实体，句子长度*batch大小*大小候选的span数*embedding_size
+        # entity_whole_sentence = entity_spans_pool.permute(2, 0, 1, 3) #
+        # # 句子长度 *  (batch_size * span_num) * embedding_size
+        # entity_whole_sentence = entity_whole_sentence.reshape([-1, batch_size * span_num, embedding_size])
+
+        #### span长度的LSTM输入，变长处理
+        # 获得regions的表示，list[batch_size*span_num, length, embedding_size]
+        regions = []
+        for batch_i in range(0, batch_size): # batch
+            sent= []
+            for span_i in range(0, span_num): # span
+                span_repr = []
+                for token_i in range(0, entity_masks.shape[-1]): # sent
+                    if  entity_masks[batch_i][span_i][token_i] == True:
+                        span_repr.append(h[batch_i][token_i]) # 获取对应region的h表示
+                if len(span_repr) != 0:
+                    regions.append(torch.stack(span_repr,dim=0))
+                else:
+                    regions.append(torch.zeros(1,embedding_size))
+
+        pack_regions = torch.nn.utils.rnn.pack_sequence(regions, enforce_sorted=False) # span regions 的压缩，保证LSTM处理变长序列
 
         self.lstm_layer.flatten_parameters()
 
-        output, (final_hidden_state, final_cell_state) = self.lstm_layer(entity_whole_sentence)
+        # output, (final_hidden_state, final_cell_state) = self.lstm_layer(entity_whole_sentence)
+        output, (final_hidden_state, final_cell_state) = self.lstm_layer(pack_regions)
         #
-        final_hidden_state = final_hidden_state.reshape([final_hidden_state.shape[0], batch_size, span_num, -1])
+        final_hidden_state = final_hidden_state.reshape([final_hidden_state.shape[0], batch_size, span_num, -1]) # 从句子级别的batch_size,reshap, [layer*biredirect, batch_size, span_num, embedding_size]
 
         # concat [h-2, h-1]
         entity_spans_pool = torch.cat([final_hidden_state[-2], final_hidden_state[-1]], dim=2)
