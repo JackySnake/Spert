@@ -167,11 +167,11 @@ def padded_stack(tensors, padding=0): # tensor是个list batch size长度，每�
 
 
 def batch_index(tensor, index, pad=False):
-    if tensor.shape[0] != index.shape[0]:
+    if tensor.shape[0] != index.shape[0]: # batch_size相等
         raise Exception()
 
     if not pad:
-        return torch.stack([tensor[i][index[i]] for i in range(index.shape[0])])
+        return torch.stack([tensor[i][index[i]] for i in range(index.shape[0])]) # 逐个batch处理 index[i]:[sample_num,2]
     else:
         return padded_stack([tensor[i][index[i]] for i in range(index.shape[0])])
 
