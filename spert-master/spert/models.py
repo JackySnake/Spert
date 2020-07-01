@@ -18,7 +18,8 @@ def get_token(h: torch.tensor, x: torch.tensor, token: int):
                                    # 直接将encoidngs展平，1维，长度为（batch size*句子长度）
 
     # get contextualized embedding of given token
-    token_h = token_h[flat == token, :]
+    token_h = token_h[flat == token, :] # 按顺序取得某个token的表示, 如[CLS] （这里类似的前提都是建立在各个张量都是按序一一对应的前提下）
+                                        # token_h [batch_size * embedding_size]
 
     return token_h
 
@@ -58,7 +59,8 @@ class SpERT(BertPreTrainedModel):
         #                           bidirectional=True)                                  
         # modify on imp end                                  
 
-        self.rel_classifier = nn.Linear(config.hidden_size * 3 + size_embedding * 2, relation_types) # 关系分类
+        # self.rel_classifier = nn.Linear(config.hidden_size * 3 + size_embedding * 2, relation_types) # 关系分类
+        self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类，头尾实体表示+[CLS]
         # self.entity_classifier = nn.Linear(config.hidden_size * 2 + size_embedding, entity_types) # entity分类
         self.entity_classifier = nn.Linear(config.hidden_size + size_embedding, entity_types) # entity分类,不使用[CLS]全局表示
         self.size_embeddings = nn.Embedding(100, size_embedding) # width embedding
@@ -91,24 +93,29 @@ class SpERT(BertPreTrainedModel):
         # get contextualized token embeddings from last transformer layer
         context_masks = context_masks.float()
         h = self.bert(input_ids=encodings, attention_mask=context_masks)[0] # 预训练的输出表示
+        # h = [batch_size, 句子长度, embeddingsize]
 
         batch_size = encodings.shape[0] # batch_size大小
 
         # classify entities
         size_embeddings = self.size_embeddings(entity_sizes)  # embed entity candidate sizes
         entity_clf, entity_spans_pool = self._classify_entities(encodings, h, entity_masks, size_embeddings) # batch那里为1，1*span数*句子长度
-
+        # entity_clf:batch_size*span_num*entity类别数
         # classify relations
         h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
+        # 扩展并在扩展的维度进行重复 h_large [batch_size,关系样本数,句子长度，embedding_size]
         rel_clf = torch.zeros([batch_size, relations.shape[1], self._relation_types]).to(
             self.rel_classifier.weight.device)
+        # batch_size,relation样本数, relationtype数
 
         # obtain relation logits
         # chunk processing to reduce memory usage
-        for i in range(0, relations.shape[1], self._max_pairs):
+        for i in range(0, relations.shape[1], self._max_pairs): # self._max_pairs:步长
             # classify relation candidates
+            # chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
+            #                                             relations, rel_masks, h_large, i)
             chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
-                                                        relations, rel_masks, h_large, i)
+                                            relations, rel_masks, h, i, encodings) # 修改+encoding
             rel_clf[:, i:i + self._max_pairs, :] = chunk_rel_logits
 
         return entity_clf, rel_clf
@@ -134,13 +141,16 @@ class SpERT(BertPreTrainedModel):
         h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
         rel_clf = torch.zeros([batch_size, relations.shape[1], self._relation_types]).to(
             self.rel_classifier.weight.device)
+        # relation中的实体index指示与entity_span的index都是对应的
 
         # obtain relation logits
         # chunk processing to reduce memory usage
         for i in range(0, relations.shape[1], self._max_pairs):
             # classify relation candidates
+            # chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
+            #                                             relations, rel_masks, h_large, i)
             chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
-                                                        relations, rel_masks, h_large, i)
+                                            relations, rel_masks, h, i, encodings) # 修改+encoding
             # apply sigmoid
             chunk_rel_clf = torch.sigmoid(chunk_rel_logits)
             rel_clf[:, i:i + self._max_pairs, :] = chunk_rel_clf
@@ -216,7 +226,8 @@ class SpERT(BertPreTrainedModel):
 
         return entity_clf, entity_spans_pool
 
-    def _classify_relations(self, entity_spans, size_embeddings, relations, rel_masks, h, chunk_start):
+    # def _classify_relations(self, entity_spans, size_embeddings, relations, rel_masks, h, chunk_start):
+    def _classify_relations(self, entity_spans, size_embeddings, relations, rel_masks, h, chunk_start, encodings):
         batch_size = relations.shape[0]
 
         # create chunks if necessary
@@ -226,25 +237,40 @@ class SpERT(BertPreTrainedModel):
             h = h[:, :relations.shape[1], :]
 
         # get pairs of entity candidate representations
-        entity_pairs = util.batch_index(entity_spans, relations)
-        entity_pairs = entity_pairs.view(batch_size, entity_pairs.shape[1], -1)
+        entity_pairs = util.batch_index(entity_spans, relations) # [batch_size, relation样本数, 2头尾实体, embedding_size]
+        # entity_pairs = entity_pairs.view(batch_size, entity_pairs.shape[1], -1) # 这个重整，-1，相当于把头尾实体的表示连接起来了,[batch_size, relation样本数, 2*embedding_size]
+        # head+tail+[CLS] start      
+        entity_pairs_heads = entity_pairs[:,:,0,:] # batch_size, relation样本数, 1 头实体, embedding_size
+        entity_pairs_heads = entity_pairs_heads.reshape([batch_size, entity_pairs.shape[1],-1]) # batch_size, relation样本数, embedding_size
+        entity_pairs_tails = entity_pairs[:,:,1,:] # batch_size, relation样本数, 1 尾实体, embedding_size
+        entity_pairs_tails = entity_pairs_tails.reshape([batch_size, entity_pairs.shape[1],-1]) # batch_size, relation样本数, embedding_size
+
+        # 获取句子全局表示
+        # h = [batch_size, 句子长度, embedding_size]
+        # encodings = [batch_size * 句子长度]
+        rel_ctx = get_token(h, encodings, self._cls_token) # rel_ctx = [batch_size, embedding_size]
+        # h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
+        rel_ctx = rel_ctx.unsqueeze(1).repeat(1,max(min(relations.shape[1], self._max_pairs), 1),1)  # rel_ctx = [batch_size, rel_sample_number, embedding_size]
+        # head+tail+[CLS] end      
 
         # get corresponding size embeddings
-        size_pair_embeddings = util.batch_index(size_embeddings, relations)
-        size_pair_embeddings = size_pair_embeddings.view(batch_size, size_pair_embeddings.shape[1], -1)
+        # size_pair_embeddings = util.batch_index(size_embeddings, relations)
+        # size_pair_embeddings = size_pair_embeddings.view(batch_size, size_pair_embeddings.shape[1], -1) 
+        # size_pair这里同entity_pairs的逻辑一样
 
         # relation context (context between entity candidate pair)
         # mask non entity candidate tokens
-        m = ((rel_masks == 0).float() * (-1e30)).unsqueeze(-1)
-        rel_ctx = m + h
-        # max pooling
-        rel_ctx = rel_ctx.max(dim=2)[0]
+        # m = ((rel_masks == 0).float() * (-1e30)).unsqueeze(-1)
+        # rel_ctx = m + h # 广播操作 [batch_size, rel_samples, sentence_length, embeddingsize]
+        # # max pooling
+        # rel_ctx = rel_ctx.max(dim=2)[0]
         # set the context vector of neighboring or adjacent entity candidates to zero
-        rel_ctx[rel_masks.to(torch.uint8).any(-1) == 0] = 0
+        # rel_ctx[rel_masks.to(torch.uint8).any(-1) == 0] = 0 # [batchsize, rel_sample_num, embeddingsize]
 
         # create relation candidate representations including context, max pooled entity candidate pairs
         # and corresponding size embeddings
-        rel_repr = torch.cat([rel_ctx, entity_pairs, size_pair_embeddings], dim=2)
+        # rel_repr = torch.cat([rel_ctx, entity_pairs, size_pair_embeddings], dim=2)
+        rel_repr = torch.cat([entity_pairs_heads, rel_ctx, entity_pairs_tails], dim=2)
         rel_repr = self.dropout(rel_repr)
 
         # classify relation candidates
