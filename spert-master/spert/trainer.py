@@ -60,7 +60,8 @@ class BaseTrainer:
         self._log_arguments()
 
         # CUDA devices
-        self._device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+        # self._device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu") # 指定gpu
+        self._device = torch.device("cuda:1") # 本docker特定有效
         self._gpu_count = torch.cuda.device_count()
 
         # set seed
