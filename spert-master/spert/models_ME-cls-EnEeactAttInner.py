@@ -61,7 +61,7 @@ class SpERT(BertPreTrainedModel):
         # self.entity_cls_mapping = nn.Linear(config.hidden_size, config.hidden_size) # 对全局表示进一步特征变换
         self.entity_tail_linear = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘                                 
 
-        self.rel_classifier = nn.Linear(config.hidden_size * 3 + size_embedding * 2, relation_types) # 关系分类
+        self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类
        
         # self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类 version0.1，头尾实体表示+[CLS]
         
