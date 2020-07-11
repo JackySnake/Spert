@@ -139,7 +139,7 @@ class SpERTTrainer(BaseTrainer):
                                 optimizer=optimizer if self.args.save_optimizer else None, extra=extra,
                                 include_iteration=False, name= str(epoch+1)+'_model')
                 
-                self._eval(model, validation_dataset, input_reader, epoch + 1, updates_epoch)
+                # self._eval(model, validation_dataset, input_reader, epoch + 1, updates_epoch)
 
                 self._logger.info("Logged in: %s" % self._log_path)
                 self._logger.info("Saved in: %s" % self._save_path)
