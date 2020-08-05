@@ -60,9 +60,9 @@ class SpERT(BertPreTrainedModel):
         # modify on imp end
         # self.entity_cls_mapping = nn.Linear(config.hidden_size, config.hidden_size) # 对全局表示进一步特征变换
         self.entity_head_linear = nn.Linear(config.hidden_size, config.hidden_size) # 头实体变换，待与尾实体点乘
-        self.entity_head_activation = nn.PReLU() 
+        # self.entity_head_activation = nn.PReLU() 
         self.entity_tail_linear = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘 
-        self.entity_tail_activation = nn.PReLU() 
+        # self.entity_tail_activation = nn.PReLU() 
 
         self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类
        
@@ -309,10 +309,10 @@ class SpERT(BertPreTrainedModel):
         
 
         entity_pairs_heads_map = self.entity_head_linear(entity_pairs_heads) ## 头实体特征提取 [batch_size, relation样本数, embedding_size]
-        entity_pairs_heads_map = self.entity_head_activation(entity_pairs_heads_map)
+        # entity_pairs_heads_map = self.entity_head_activation(entity_pairs_heads_map)
 
         entity_pairs_tails_map = self.entity_tail_linear(entity_pairs_tails) ## 尾实体特征提取 [batch_size, relation样本数, embedding_size]
-        entity_pairs_tails_map = self.entity_tail_activation(entity_pairs_tails_map)
+        # entity_pairs_tails_map = self.entity_tail_activation(entity_pairs_tails_map)
 
         entity_pair_reaction = entity_pairs_heads_map * entity_pairs_tails_map ## 点乘，实体交互特征，用来计算attention权重 [batch_size, relation样本数, embedding_size]
 
