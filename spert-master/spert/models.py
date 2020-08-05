@@ -51,16 +51,20 @@ class SpERT(BertPreTrainedModel):
                                   hidden_size=config.hidden_size // 2,
                                   num_layers=2,
                                   #dropout=0.5,
-                                  bidirectional=True)
-        # self.entity_cls_mapping = nn.Linear(config.hidden_size, config.hidden_size) # 对全局表示进一步特征变换
+                                  bidirectional=True)       
         # self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
         #                           hidden_size=config.hidden_size // 2,
         #                           num_layers=1,
         #                           #dropout=0.5,
         #                           bidirectional=True)                                  
-        # modify on imp end                                  
+        # modify on imp end
+        # self.entity_cls_mapping = nn.Linear(config.hidden_size, config.hidden_size) # 对全局表示进一步特征变换
+        self.entity_head_linear = nn.Linear(config.hidden_size, config.hidden_size) # 头实体变换，待与尾实体点乘
+        self.entity_head_activation = nn.PReLU() 
+        self.entity_tail_linear = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘 
+        self.entity_tail_activation = nn.PReLU() 
 
-        self.rel_classifier = nn.Linear(config.hidden_size * 3 + size_embedding * 2, relation_types) # 关系分类
+        self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类
        
         # self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类 version0.1，头尾实体表示+[CLS]
         
@@ -246,9 +250,15 @@ class SpERT(BertPreTrainedModel):
 
         return entity_clf, entity_spans_pool
 
+    # h: [batch_size, relation_samples, sentence_length, embedding_size]
+    # rel_masks: [batch_size, relation_samples, sentence_length]
     def _classify_relations(self, entity_spans, size_embeddings, relations, rel_masks, h, chunk_start):
     # def _classify_relations(self, entity_spans, size_embeddings, relations, rel_masks, h, chunk_start, encodings):
         batch_size = relations.shape[0]
+        rel_sample_num = relations.shape[1]
+        sent_length = h.shape[-2]
+        embedding_size = entity_spans.shape[2]
+
 
         # create chunks if necessary
         if relations.shape[1] > self._max_pairs:
@@ -258,12 +268,13 @@ class SpERT(BertPreTrainedModel):
 
         # get pairs of entity candidate representations
         entity_pairs = util.batch_index(entity_spans, relations) # [batch_size, relation样本数, 2头尾实体, embedding_size]
-        entity_pairs = entity_pairs.view(batch_size, entity_pairs.shape[1], -1) # 这个重整，-1，相当于把头尾实体的表示连接起来了,[batch_size, relation样本数, 2*embedding_size]
+        # entity_pairs = entity_pairs.view(batch_size, entity_pairs.shape[1], -1) # 这个重整，-1，相当于把头尾实体的表示连接起来了,[batch_size, relation样本数, 2*embedding_size]
         # head+tail+[CLS] start 关系分类version0.3     
-        # entity_pairs_heads = entity_pairs[:,:,0,:] # batch_size, relation样本数, 1 头实体, embedding_size
-        # entity_pairs_heads = entity_pairs_heads.reshape([batch_size, entity_pairs.shape[1],-1]) # batch_size, relation样本数, embedding_size
-        # entity_pairs_tails = entity_pairs[:,:,1,:] # batch_size, relation样本数, 1 尾实体, embedding_size
-        # entity_pairs_tails = entity_pairs_tails.reshape([batch_size, entity_pairs.shape[1],-1]) # batch_size, relation样本数, embedding_size
+        entity_pairs_heads = entity_pairs[:,:,0,:] # batch_size, relation样本数, 1 头实体, embedding_size
+        entity_pairs_heads = entity_pairs_heads.reshape([batch_size, entity_pairs.shape[1],-1]) # batch_size, relation样本数, embedding_size
+        
+        entity_pairs_tails = entity_pairs[:,:,1,:] # batch_size, relation样本数, 1 尾实体, embedding_size
+        entity_pairs_tails = entity_pairs_tails.reshape([batch_size, entity_pairs.shape[1],-1]) # batch_size, relation样本数, embedding_size
 
         # 获取句子全局表示
         # # h = [batch_size, 句子长度, embedding_size]
@@ -279,25 +290,46 @@ class SpERT(BertPreTrainedModel):
         # rel_ctx_mapping = self.sent_rel_ctx_mapping(rel_ctx)
         # rel_repr = torch.cat([entity_pairs_heads_mapping, rel_ctx_mapping, entity_pairs_tails_mapping], dim=2)
 
-        # get corresponding size embeddings
-        size_pair_embeddings = util.batch_index(size_embeddings, relations)
-        size_pair_embeddings = size_pair_embeddings.view(batch_size, size_pair_embeddings.shape[1], -1) 
+        # # get corresponding size embeddings
+        # size_pair_embeddings = util.batch_index(size_embeddings, relations)
+        # size_pair_embeddings = size_pair_embeddings.view(batch_size, size_pair_embeddings.shape[1], -1) 
         # size_pair这里同entity_pairs的逻辑一样
 
-        # relation context (context between entity candidate pair)
-        # mask non entity candidate tokens
-        # rel_masks [batch_size, relation_num, sent_length]
-        m = ((rel_masks == 0).float() * (-1e30)).unsqueeze(-1) # m [batch_size, relation_num, sent_length, 1] 于h_large保持一致
-        rel_ctx = m + h # 广播操作 [batch_size, rel_samples, sentence_length, embeddingsize]
-        # # max pooling
-        rel_ctx = rel_ctx.max(dim=2)[0] # 最大池化 rel_ctx [batch_size, relation_num, embedding_size]
-        # set the context vector of neighboring or adjacent entity candidates to zero
-        rel_ctx[rel_masks.to(torch.uint8).any(-1) == 0] = 0 # [batchsize, rel_sample_num, embeddingsize]
+        # # relation context (context between entity candidate pair)
+        # # mask non entity candidate tokens
+        # m = ((rel_masks == 0).float() * (-1e30)).unsqueeze(-1)
+        # rel_ctx = m + h # 广播操作 [batch_size, rel_samples, sentence_length, embeddingsize]
+        # # # max pooling
+        # rel_ctx = rel_ctx.max(dim=2)[0]
+        # # set the context vector of neighboring or adjacent entity candidates to zero
+        # rel_ctx[rel_masks.to(torch.uint8).any(-1) == 0] = 0 # [batchsize, rel_sample_num, embeddingsize]
+
+        m = rel_masks.float().unsqueeze(-1) ## OK
+        rel_ctx = m * h ## 将实体中间以外的表示全部置 rel_ctx:[batch_size,relation_samples,sentence_length, embedding_size]
+        
+
+        entity_pairs_heads_map = self.entity_head_linear(entity_pairs_heads) ## 头实体特征提取 [batch_size, relation样本数, embedding_size]
+        entity_pairs_heads_map = self.entity_head_activation(entity_pairs_heads_map)
+
+        entity_pairs_tails_map = self.entity_tail_linear(entity_pairs_tails) ## 尾实体特征提取 [batch_size, relation样本数, embedding_size]
+        entity_pairs_tails_map = self.entity_tail_activation(entity_pairs_tails_map)
+
+        entity_pair_reaction = entity_pairs_heads_map * entity_pairs_tails_map ## 点乘，实体交互特征，用来计算attention权重 [batch_size, relation样本数, embedding_size]
+
+        attention_weight = torch.matmul(entity_pair_reaction.unsqueeze(2), rel_ctx.permute(0,1,3,2)) ## 计算attention权重 attention_weight:[batch_size, relation样本数,1, sentence_length]
+        attention_weight_softmax = torch.softmax(attention_weight, dim = -1) ## softmax归一化，试验下是否去掉 [batch_size, relation样本数,1, sentence_length]
+        attention_rel_ctx = torch.matmul(attention_weight_softmax, rel_ctx) ## 获得attention的关系相关全局表示 [batch_size, relation样本数,1, embedding_size]
+        # attention_rel_ctx = torch.matmul(attention_weight, rel_ctx)
+        attention_rel_ctx = attention_rel_ctx.reshape(batch_size, rel_sample_num, -1) # [batch_size, relation样本数, embedding_size]
+
+
 
         # create relation candidate representations including context, max pooled entity candidate pairs
         # and corresponding size embeddings
-        rel_repr = torch.cat([rel_ctx, entity_pairs, size_pair_embeddings], dim=2)
+        # rel_repr = torch.cat([rel_ctx, entity_pairs, size_pair_embeddings], dim=2)
         # rel_repr = torch.cat([entity_pairs_heads, rel_ctx, entity_pairs_tails], dim=2)
+        rel_repr = torch.cat([entity_pairs_heads, attention_rel_ctx, entity_pairs_tails], dim=2)   
+
         rel_repr = self.dropout(rel_repr)
 
         # classify relation candidates
