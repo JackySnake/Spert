@@ -50,8 +50,9 @@ class SpERT(BertPreTrainedModel):
         self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
                                   hidden_size=config.hidden_size // 2,
                                   num_layers=2,
-                                  #dropout=0.5,
-                                  bidirectional=True)       
+                                #   dropout=0.5,
+                                  bidirectional=True)
+        self.entity_global_map =  nn.Linear(config.hidden_size, config.hidden_size) # 输入:实体LSTM表示 输出：实体全局表示注意力特征变换
         # self.lstm_layer = nn.LSTM(input_size=config.hidden_size,
         #                           hidden_size=config.hidden_size // 2,
         #                           num_layers=1,
@@ -60,12 +61,9 @@ class SpERT(BertPreTrainedModel):
         # modify on imp end
         # self.entity_cls_mapping = nn.Linear(config.hidden_size, config.hidden_size) # 对全局表示进一步特征变换
         self.entity_head_linear = nn.Linear(config.hidden_size, config.hidden_size) # 头实体变换，待与尾实体点乘
-        # self.entity_head_activation = nn.ReLU() 
+        # self.entity_head_activation = nn.PReLU() 
         self.entity_tail_linear = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘 
-        # self.entity_tail_activation = nn.ReLU() 
-
-        self.entity_head_att_map = nn.Linear(config.hidden_size, config.hidden_size) # 头实体的全句attention前变换映射
-        self.entity_tail_att_map = nn.Linear(config.hidden_size, config.hidden_size) # 巍实体的全句attention前变换映射
+        # self.entity_tail_activation = nn.PReLU() 
 
         self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类
        
@@ -186,6 +184,7 @@ class SpERT(BertPreTrainedModel):
 
         return entity_clf, rel_clf, relations
 
+    # h: [batch_size, sentence_length, embedding_size(768)]
     def _classify_entities(self, encodings, h, entity_masks, size_embeddings):
         # entity_masks shape: batch大小*大小候选span数*句子长, span 对应的 句子长度 的向量，表示了实体在encoding中的位置
         # max pool entity candidate spans
@@ -229,20 +228,29 @@ class SpERT(BertPreTrainedModel):
         output, (final_hidden_state, final_cell_state) = self.lstm_layer(entity_whole_sentence)
         # output, (final_hidden_state, final_cell_state) = self.lstm_layer(pack_regions)
         #
-        final_hidden_state = final_hidden_state.reshape([final_hidden_state.shape[0], batch_size, span_num, -1]) # 从句子级别的batch_size,reshap, [layer*biredirect, batch_size, span_num, embedding_size]
+        final_hidden_state = final_hidden_state.reshape([final_hidden_state.shape[0], batch_size, span_num, -1]) # 从句子级别的batch_size,reshap, [layer*biredirect(2*2), batch_size, span_num, embedding_size((768/2))]
 
         # concat [h-2, h-1]
-        entity_spans_pool = torch.cat([final_hidden_state[-2], final_hidden_state[-1]], dim=2)
+        entity_spans_pool = torch.cat([final_hidden_state[-2], final_hidden_state[-1]], dim=2) # entity_spans_pool:[batch_size, entity_num, hidden_embedding_size(768)]
 
         # mod on imp end
         # get cls token as candidate context representation
-        entity_ctx = get_token(h, encodings, self._cls_token) # [CLS]全局表示
+        # entity_ctx = get_token(h, encodings, self._cls_token) # [CLS]全局表示 [batch_size, hidden_embedding_size]
+        
+        # 实体注意力计算全局实体相关表示
+        entity_map_for_att = self.entity_global_map(entity_spans_pool) # entity_map_for_att:[batch_size, entity_num, hidden_embedding_size(768)]
+        entity_map_for_att = entity_map_for_att.unsqueeze(2) # entity_map_for_att:[batch_size, span_num, 1, embedding_size]
+        entity_global_attention = torch.matmul(entity_map_for_att, h.unsqueeze(1).repeat(1,span_num,1,1).permute(0,1,3,2)) # entity_global_attention:[batch_size, span_num, 1, sentence_length]
+        entity_global_attention_softmax = torch.softmax(entity_global_attention, dim = -1) # 归一化 entity_global_attention_softmax:[batch_size, span_num, 1, sentence_length] 
+        entity_ctx = torch.matmul(entity_global_attention_softmax, h.unsqueeze(1).repeat(1,span_num,1,1)) # entity_ctx:[batch_size, span_num, 1, embedding_size]
+        entity_ctx = entity_ctx.reshape(batch_size, span_num, -1) # entity_ctx:[batch_size, span_num, 1, embedding_size]
 
         # entity_ctx_mapping = self.entity_cls_mapping(entity_ctx)# [CLS] Mapping
 
         # create candidate representations including context, max pooled span and size embedding
-        entity_repr = torch.cat([entity_ctx.unsqueeze(1).repeat(1, entity_spans_pool.shape[1], 1),
-                                 entity_spans_pool, size_embeddings], dim=2)
+        # entity_repr = torch.cat([entity_ctx.unsqueeze(1).repeat(1, entity_spans_pool.shape[1], 1), 
+        #                          entity_spans_pool, size_embeddings], dim=2)
+        entity_repr = torch.cat([entity_ctx, entity_spans_pool, size_embeddings], dim=2) # 连接(实体注意力全局表示，实体表示，size_embedding)
         # entity_repr = torch.cat([entity_spans_pool, size_embeddings], dim=2) #不使用[CLS全局表示]
         # entity_repr = torch.cat([entity_ctx_mapping.unsqueeze(1).repeat(1, entity_spans_pool.shape[1], 1),
         #                          entity_spans_pool, size_embeddings], dim=2) # entity_cls_mapping;entity_lstm;size_embedding
@@ -307,21 +315,6 @@ class SpERT(BertPreTrainedModel):
         # # set the context vector of neighboring or adjacent entity candidates to zero
         # rel_ctx[rel_masks.to(torch.uint8).any(-1) == 0] = 0 # [batchsize, rel_sample_num, embeddingsize]
 
-        # 头实体表示，利用attention方法，计算关系相关的全局表示
-        head_entity_map_for_global = self.entity_head_att_map(entity_pairs_heads) # 进行特征变换
-        head_global_attention_weight = torch.matmul(head_entity_map_for_global.unsqueeze(2), h.permute(0,1,3,2)) # 点乘计算权重
-        head_global_attention_weight_softmax = torch.softmax(head_global_attention_weight, dim = -1) # 权重归一化
-        head_global_attention_repr = torch.matmul(head_global_attention_weight_softmax, h) # 计算全局表达
-        head_global_attention_repr = head_global_attention_repr.reshape(batch_size, rel_sample_num, -1) # reshap [batch_size, relation样本数, embedding_size]
-
-        # 尾实体表示，利用attention方法，计算关系相关的全局表示
-        tail_entity_map_for_global = self.entity_tail_att_map(entity_pairs_tails)
-        tail_global_attention_weight = torch.matmul(tail_entity_map_for_global.unsqueeze(2), h.permute(0,1,3,2))
-        tail_global_attention_weight_softmax = torch.softmax(tail_global_attention_weight, dim = -1)
-        tail_global_attention_repr = torch.matmul(tail_global_attention_weight_softmax, h)
-        tail_global_attention_repr = tail_global_attention_repr.reshape(batch_size, rel_sample_num, -1)
-        
-
         m = rel_masks.float().unsqueeze(-1) ## OK
         rel_ctx = m * h ## 将实体中间以外的表示全部置 rel_ctx:[batch_size,relation_samples,sentence_length, embedding_size]
         
@@ -340,7 +333,6 @@ class SpERT(BertPreTrainedModel):
         # attention_rel_ctx = torch.matmul(attention_weight, rel_ctx)
         attention_rel_ctx = attention_rel_ctx.reshape(batch_size, rel_sample_num, -1) # [batch_size, relation样本数, embedding_size]
 
-        attention_rel_ctx = attention_rel_ctx + head_global_attention_repr + tail_global_attention_repr # 局部中间表达+头实体相关全局表达+尾实体相关全局表达
 
 
         # create relation candidate representations including context, max pooled entity candidate pairs
