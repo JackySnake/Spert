@@ -64,6 +64,7 @@ class SpERT(BertPreTrainedModel):
         # self.entity_head_activation = nn.PReLU() 
         self.entity_tail_linear = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘 
         # self.entity_tail_activation = nn.PReLU() 
+        # self.rel_cls_map = nn.Linear(config.hidden_size, config.hidden_size)
 
         self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类
        
@@ -80,8 +81,6 @@ class SpERT(BertPreTrainedModel):
         # self.sent_rel_ctx_mapping = nn.Sequential(nn.Linear(config.hidden_size,128), nn.ReLU())
         # self.rel_classifier = nn.Linear(128 * 3 , relation_types) # 关系分类
         
-
-
         self.entity_classifier = nn.Linear(config.hidden_size * 2 + size_embedding, entity_types) # entity分类
         # self.entity_classifier = nn.Linear(config.hidden_size + size_embedding, entity_types) # entity分类,不使用[CLS]全局表示
         # self.entity_classifier = nn.Linear(config.hidden_size + config.hidden_size + size_embedding, entity_types) # entity分类,使用[CLS]全局表示 + 全局变换
