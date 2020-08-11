@@ -64,9 +64,9 @@ class SpERTTrainer(BaseTrainer):
         input_reader.read({train_label: train_path, valid_label: valid_path}) # 读取数据集，此时还未进行负采样, 保存到input_reader.datasets
         self._log_datasets(input_reader)
 
-        train_dataset = input_reader.get_dataset(train_label) # 训练集
-        train_sample_count = train_dataset.document_count # 样本数
-        updates_epoch = train_sample_count // args.train_batch_size # 计算迭代的更新参数的次数/每轮
+        train_dataset = input_reader.get_dataset(train_label) # 获取训练集
+        train_sample_count = train_dataset.document_count # 训练集样本数
+        updates_epoch = train_sample_count // args.train_batch_size # 计算每个epoch 迭代的更新参数的 次数
         updates_total = updates_epoch * args.epochs # 计算总的更新参数次数
 
         validation_dataset = input_reader.get_dataset(valid_label) # 验证集
@@ -108,10 +108,13 @@ class SpERTTrainer(BaseTrainer):
         # 设置了不更新偏差bias
         # 创建了AdamW优化器
         # create optimizer
-        optimizer_params = self._get_optimizer_params(model)
-        optimizer = AdamW(optimizer_params, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+        # optimizer_params = self._get_optimizer_params(model)
+        # optimizer = AdamW(optimizer_params, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+
+        optimizer_params_diff_part = self._get_optimizer_params_on_diff_part_with_lr(model, entity_part_lr=0.001, relation_part_lr = 0.001)
+        optimizer = AdamW(optimizer_params_diff_part, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
         # create scheduler
-        # torch.optim.lr_scheduler接口,是一种学习率调整策略，其中提供了基于多种epoch数目调整学习率的方法.
+        # torch.optim.lr_scheduler接口,是一种学习率调整策略，其中提供了基于多种epoch数目调整学习率的方法,本方法使用线性的衰减策略。
         # 用一个Schedule把原始Optimizer装饰上，然后再输入一些相关参数，然后用这个Schedule做step()。
         scheduler = transformers.get_linear_schedule_with_warmup(optimizer,
                                                                  num_warmup_steps=args.lr_warmup * updates_total,
@@ -119,7 +122,7 @@ class SpERTTrainer(BaseTrainer):
         # create loss function
         rel_criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
         entity_criterion = torch.nn.CrossEntropyLoss(reduction='none')
-        compute_loss = SpERTLoss(rel_criterion, entity_criterion, model, optimizer, scheduler, args.max_grad_norm)
+        compute_loss = SpERTLoss(rel_criterion, entity_criterion, model, optimizer, scheduler, args.max_grad_norm) # 初始化Loss
 
         # eval validation set
         if args.init_eval:
@@ -216,7 +219,7 @@ class SpERTTrainer(BaseTrainer):
         model.zero_grad()
 
         iteration = 0
-        total = dataset.document_count // self.args.train_batch_size
+        total = dataset.document_count // self.args.train_batch_size # 计算每个epoch的batch数目
         for batch in tqdm(data_loader, total=total, desc='Train epoch %s' % epoch):
             model.train()
             batch = util.to_device(batch, self._device)
@@ -225,12 +228,12 @@ class SpERTTrainer(BaseTrainer):
             entity_logits, rel_logits = model(encodings=batch['encodings'], context_masks=batch['context_masks'],
                                               entity_masks=batch['entity_masks'], entity_sizes=batch['entity_sizes'],
                                               relations=batch['rels'], rel_masks=batch['rel_masks'])
-
+            # entity_logits:[batch_size, entity_num, entity_type], rel_logits:[batch_size,relation_num,relation_type]
             # compute loss and optimize parameters
             batch_loss = compute_loss.compute(entity_logits=entity_logits, rel_logits=rel_logits,
                                               rel_types=batch['rel_types'], entity_types=batch['entity_types'],
                                               entity_sample_masks=batch['entity_sample_masks'],
-                                              rel_sample_masks=batch['rel_sample_masks'])
+                                              rel_sample_masks=batch['rel_sample_masks']) # 计算loss,更新参数，更新学习率
 
             # logging
             iteration += 1
@@ -289,17 +292,39 @@ class SpERTTrainer(BaseTrainer):
         if self.args.store_examples:
             evaluator.store_examples()
 
-#分别保存了需要优化的参数，不知道是为什么
-#返回optimizer_params，数组长度为2
-#optimizer_params[0],dict,长度2，保存no_decay以外的参数
-#optimizer_params[0],dict,长度2，保存no_decay的参数
+    #分别保存了需要优化的参数
+    #返回optimizer_params，数组长度为2
+    #optimizer_params[0],dict,长度2，保存no_decay以外的参数
+    #optimizer_params[1],dict,长度2，保存no_decay的参数
     def _get_optimizer_params(self, model):
         param_optimizer = list(model.named_parameters())
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
         optimizer_params = [
-            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
+            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], #any() 函数用于判断给定的可迭代参数 iterable 是否全部为 False，则返回 False，如果有一个为 True，则返回 True
              'weight_decay': self.args.weight_decay},
             {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}]
+
+        return optimizer_params
+
+    #按预训练模型，实体分类，关系分类三个部分，分别保存了需要优化的参数
+    #返回optimizer_params，数组长度为2
+    #optimizer_params[0],dict,长度2，保存no_decay以外的参数
+    #optimizer_params[1],dict,长度2，保存no_decay的参数
+    def _get_optimizer_params_on_diff_part_with_lr(self, model, entity_part_lr, relation_part_lr):
+        param_optimizer = list(model.named_parameters())
+        no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+        entity_part = ['lstm_layer', 'entity_global_map','entity_classifier','size_embeddings']
+        relation_part = ['entity_head_linear', 'entity_tail_linear','rel_classifier']
+        optimizer_params = [
+            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay) and 'bert' in n], # bert part, weight_decay
+             'weight_decay': self.args.weight_decay},
+            {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay) and 'bert' in n], 'weight_decay': 0.0}, # bert part, no_weight_decay
+            {'params': [p for n, p in param_optimizer if any(nd in n for nd in entity_part) and not any(nd in n for nd in no_decay)], 'lr':entity_part_lr}, # entity_part, weight_decay
+            {'params': [p for n, p in param_optimizer if any(nd in n for nd in entity_part) and any(nd in n for nd in no_decay)], 'weight_decay': 0.0, 'lr':entity_part_lr}, # entity_part, no_weight_decay
+            {'params': [p for n, p in param_optimizer if any(nd in n for nd in relation_part) and not any(nd in n for nd in no_decay)], 'lr':relation_part_lr}, # relation_part, weight_decay
+            {'params': [p for n, p in param_optimizer if any(nd in n for nd in relation_part) and any(nd in n for nd in no_decay)], 'weight_decay': 0.0, 'lr':relation_part_lr} # relation_part, no_weight_decay
+            ] # bert part, no weight_decay
+
 
         return optimizer_params
 
