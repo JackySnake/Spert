@@ -159,7 +159,7 @@ class SpERT(BertPreTrainedModel):
                                                                     entity_sample_masks, ctx_size)
         
         rel_sample_masks = rel_sample_masks.float().unsqueeze(-1)
-        h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
+        # h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
         rel_clf = torch.zeros([batch_size, relations.shape[1], self._relation_types]).to(
             self.rel_classifier.weight.device)
         # relation中的实体index指示与entity_span的index都是对应的
@@ -168,10 +168,10 @@ class SpERT(BertPreTrainedModel):
         # chunk processing to reduce memory usage
         for i in range(0, relations.shape[1], self._max_pairs):
             # classify relation candidates
-            chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
-                                                        relations, rel_masks, h_large, i)
             # chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
-            #                                 relations, rel_masks, h, i, encodings) # 修改+encoding
+            #                                             relations, rel_masks, h_large, i)
+            chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
+                                            relations, rel_masks, h, i, encodings) # 修改+encoding
             # apply sigmoid
             chunk_rel_clf = torch.sigmoid(chunk_rel_logits)
             rel_clf[:, i:i + self._max_pairs, :] = chunk_rel_clf

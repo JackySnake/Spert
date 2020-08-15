@@ -61,11 +61,12 @@ class SpERT(BertPreTrainedModel):
         # modify on imp end
         # self.entity_cls_mapping = nn.Linear(config.hidden_size, config.hidden_size) # 对全局表示进一步特征变换
         self.entity_head_linear = nn.Linear(config.hidden_size, config.hidden_size) # 头实体变换，待与尾实体点乘
-        # self.entity_head_activation = nn.PReLU() 
+        self.entity_head_activation = nn.ReLU() 
+        self.entity_head_linear2 = nn.Linear(config.hidden_size, config.hidden_size) # 头实体变换，待与尾实体点乘
         self.entity_tail_linear = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘 
-        # self.entity_tail_activation = nn.PReLU() 
-        self.entity_head_att_map = nn.Linear(config.hidden_size, config.hidden_size) # 头实体的全句attention前变换映射
-        self.entity_tail_att_map = nn.Linear(config.hidden_size, config.hidden_size) # 巍实体的全句attention前变换映射
+        self.entity_tail_activation = nn.ReLU() 
+        self.entity_tail_linear2 = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘 
+        # self.rel_cls_map = nn.Linear(config.hidden_size, config.hidden_size)
 
         self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类
        
@@ -82,8 +83,6 @@ class SpERT(BertPreTrainedModel):
         # self.sent_rel_ctx_mapping = nn.Sequential(nn.Linear(config.hidden_size,128), nn.ReLU())
         # self.rel_classifier = nn.Linear(128 * 3 , relation_types) # 关系分类
         
-
-
         self.entity_classifier = nn.Linear(config.hidden_size * 2 + size_embedding, entity_types) # entity分类
         # self.entity_classifier = nn.Linear(config.hidden_size + size_embedding, entity_types) # entity分类,不使用[CLS]全局表示
         # self.entity_classifier = nn.Linear(config.hidden_size + config.hidden_size + size_embedding, entity_types) # entity分类,使用[CLS]全局表示 + 全局变换
@@ -97,6 +96,23 @@ class SpERT(BertPreTrainedModel):
 
         # weight initialization
         self.init_weights()
+        # 初始化
+        # nn.init.xavier_normal_(self.lstm_layer.all_weights)
+        nn.init.xavier_normal_(self.lstm_layer.all_weights[0][0])
+        nn.init.xavier_normal_(self.lstm_layer.all_weights[0][1])
+        nn.init.xavier_normal_(self.lstm_layer.all_weights[1][0])
+        nn.init.xavier_normal_(self.lstm_layer.all_weights[1][1])
+        nn.init.xavier_normal_(self.lstm_layer.all_weights[2][0])
+        nn.init.xavier_normal_(self.lstm_layer.all_weights[2][1])
+        nn.init.xavier_normal_(self.lstm_layer.all_weights[3][0])
+        nn.init.xavier_normal_(self.lstm_layer.all_weights[3][1])
+        nn.init.xavier_normal_(self.entity_global_map.weight)
+        nn.init.xavier_normal_(self.entity_classifier.weight)
+        nn.init.xavier_normal_(self.entity_head_linear.weight)
+        nn.init.xavier_normal_(self.entity_head_linear2.weight)
+        nn.init.xavier_normal_(self.entity_tail_linear.weight)
+        nn.init.xavier_normal_(self.entity_head_linear2.weight)
+        nn.init.xavier_normal_(self.rel_classifier.weight)
 
         if freeze_transformer:
             print("Freeze transformer weights")
@@ -126,8 +142,8 @@ class SpERT(BertPreTrainedModel):
         entity_clf, entity_spans_pool = self._classify_entities(encodings, h, entity_masks, size_embeddings) # batch那里为1，1*span数*句子长度
         # entity_clf:batch_size*span_num*entity类别数
         # classify relations
-        h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
-        # 扩展并在扩展的维度进行重复 h_large [batch_size,关系样本数,句子长度，embedding_size]
+        # h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1) # 扩展并在扩展的维度进行重复 h_large [batch_size,关系样本数,句子长度，embedding_size]
+        
         rel_clf = torch.zeros([batch_size, relations.shape[1], self._relation_types]).to(
             self.rel_classifier.weight.device)
         # batch_size,relation样本数, relationtype数
@@ -136,10 +152,10 @@ class SpERT(BertPreTrainedModel):
         # chunk processing to reduce memory usage
         for i in range(0, relations.shape[1], self._max_pairs): # self._max_pairs:步长
             # classify relation candidates
-            chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
-                                                        relations, rel_masks, h_large, i)
             # chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
-            #                                 relations, rel_masks, h, i, encodings) # 修改+encoding
+            #                                             relations, rel_masks, h_large, i)
+            chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
+                                            relations, rel_masks, h, i, encodings) # 修改+encoding, h_large部分在函数中做
             rel_clf[:, i:i + self._max_pairs, :] = chunk_rel_logits
 
         return entity_clf, rel_clf
@@ -162,7 +178,7 @@ class SpERT(BertPreTrainedModel):
                                                                     entity_sample_masks, ctx_size)
         
         rel_sample_masks = rel_sample_masks.float().unsqueeze(-1)
-        h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
+        # h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
         rel_clf = torch.zeros([batch_size, relations.shape[1], self._relation_types]).to(
             self.rel_classifier.weight.device)
         # relation中的实体index指示与entity_span的index都是对应的
@@ -171,10 +187,10 @@ class SpERT(BertPreTrainedModel):
         # chunk processing to reduce memory usage
         for i in range(0, relations.shape[1], self._max_pairs):
             # classify relation candidates
-            chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
-                                                        relations, rel_masks, h_large, i)
             # chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
-            #                                 relations, rel_masks, h, i, encodings) # 修改+encoding
+            #                                             relations, rel_masks, h_large, i)
+            chunk_rel_logits = self._classify_relations(entity_spans_pool, size_embeddings,
+                                            relations, rel_masks, h, i, encodings) # 修改+encoding
             # apply sigmoid
             chunk_rel_clf = torch.sigmoid(chunk_rel_logits)
             rel_clf[:, i:i + self._max_pairs, :] = chunk_rel_clf
@@ -265,8 +281,8 @@ class SpERT(BertPreTrainedModel):
 
     # h: [batch_size, relation_samples, sentence_length, embedding_size]
     # rel_masks: [batch_size, relation_samples, sentence_length]
-    def _classify_relations(self, entity_spans, size_embeddings, relations, rel_masks, h, chunk_start):
-    # def _classify_relations(self, entity_spans, size_embeddings, relations, rel_masks, h, chunk_start, encodings):
+    # def _classify_relations(self, entity_spans, size_embeddings, relations, rel_masks, h, chunk_start):
+    def _classify_relations(self, entity_spans, size_embeddings, relations, rel_masks, h, chunk_start, encodings):
         batch_size = relations.shape[0]
         rel_sample_num = relations.shape[1]
         sent_length = h.shape[-2]
@@ -289,13 +305,13 @@ class SpERT(BertPreTrainedModel):
         entity_pairs_tails = entity_pairs[:,:,1,:] # batch_size, relation样本数, 1 尾实体, embedding_size
         entity_pairs_tails = entity_pairs_tails.reshape([batch_size, entity_pairs.shape[1],-1]) # batch_size, relation样本数, embedding_size
 
-        # 获取句子全局表示
-        # # h = [batch_size, 句子长度, embedding_size]
-        # # encodings = [batch_size * 句子长度]
-        # rel_ctx = get_token(h, encodings, self._cls_token) # rel_ctx = [batch_size, embedding_size]
-        # # h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
-        # rel_ctx = rel_ctx.unsqueeze(1).repeat(1,max(min(relations.shape[1], self._max_pairs), 1),1)  # rel_ctx = [batch_size, rel_sample_number, embedding_size]
-        # # head+tail+[CLS] end      
+        # 获取句子全局表示[cls]
+        # h = [batch_size, 句子长度, embedding_size]
+        # encodings = [batch_size * 句子长度]
+        rel_ctx_cls = get_token(h, encodings, self._cls_token) # rel_ctx = [batch_size, embedding_size]
+        # h_large = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1)
+        rel_ctx_cls = rel_ctx_cls.unsqueeze(1).repeat(1,max(min(relations.shape[1], self._max_pairs), 1),1)  # rel_ctx = [batch_size, rel_sample_number, embedding_size]
+        # head+tail+[CLS] end      
 
         # # 关系分类 version0.3
         # entity_pairs_heads_mapping = self.entity_head_mapping(entity_pairs_heads)
@@ -317,25 +333,18 @@ class SpERT(BertPreTrainedModel):
         # # set the context vector of neighboring or adjacent entity candidates to zero
         # rel_ctx[rel_masks.to(torch.uint8).any(-1) == 0] = 0 # [batchsize, rel_sample_num, embeddingsize]
 
-        # 头尾实体交互，基于注意力机制计算全局表示
-        head_entity_map_for_global = self.entity_head_att_map(entity_pairs_heads) # 进行头实体和尾实体的特征变换
-        tail_entity_map_for_global = self.entity_tail_att_map(entity_pairs_tails)
-        global_entity_pair_reaction = head_entity_map_for_global * tail_entity_map_for_global # 头尾实体交互
-        global_entity_pair_attention = torch.matmul(global_entity_pair_reaction.unsqueeze(2), h.permute(0,1,3,2)) # 计算attention权重
-        global_entity_pair_attention_softmax = torch.softmax(global_entity_pair_attention, dim = -1) # 权重归一化
-        global_entity_pair_repr = torch.matmul(global_entity_pair_attention_softmax, h) # 计算全局表示
-        global_entity_pair_repr = global_entity_pair_repr.reshape(batch_size, rel_sample_num, -1) # [batch_size, relation样本数, embedding_size]
-
-
+        h = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1) # h按关系数目扩展(repeat)
         m = rel_masks.float().unsqueeze(-1) ## OK
         rel_ctx = m * h ## 将实体中间以外的表示全部置 rel_ctx:[batch_size,relation_samples,sentence_length, embedding_size]
         
 
         entity_pairs_heads_map = self.entity_head_linear(entity_pairs_heads) ## 头实体特征提取 [batch_size, relation样本数, embedding_size]
-        # entity_pairs_heads_map = self.entity_head_activation(entity_pairs_heads_map)
+        entity_pairs_heads_map = self.entity_head_activation(entity_pairs_heads_map)
+        entity_pairs_heads_map = self.entity_head_linear2(entity_pairs_heads_map)
 
         entity_pairs_tails_map = self.entity_tail_linear(entity_pairs_tails) ## 尾实体特征提取 [batch_size, relation样本数, embedding_size]
-        # entity_pairs_tails_map = self.entity_tail_activation(entity_pairs_tails_map)
+        entity_pairs_tails_map = self.entity_tail_activation(entity_pairs_tails_map)
+        entity_pairs_tails_map = self.entity_head_linear2(entity_pairs_tails_map)
 
         entity_pair_reaction = entity_pairs_heads_map * entity_pairs_tails_map ## 点乘，实体交互特征，用来计算attention权重 [batch_size, relation样本数, embedding_size]
 
@@ -345,14 +354,14 @@ class SpERT(BertPreTrainedModel):
         # attention_rel_ctx = torch.matmul(attention_weight, rel_ctx)
         attention_rel_ctx = attention_rel_ctx.reshape(batch_size, rel_sample_num, -1) # [batch_size, relation样本数, embedding_size]
 
-        # attention_rel_ctx = attention_rel_ctx + head_global_attention_repr + tail_global_attention_repr # 局部中间表达+头实体相关全局表达+尾实体相关全局表达
-        attention_rel_ctx = attention_rel_ctx + global_entity_pair_repr # 局部中间表示 + 全局实体交互注意力表示
+        rel_ctx_attentionWithCLS = attention_rel_ctx + rel_ctx_cls #实体交互局部注意力表示+CLS表示
 
         # create relation candidate representations including context, max pooled entity candidate pairs
         # and corresponding size embeddings
         # rel_repr = torch.cat([rel_ctx, entity_pairs, size_pair_embeddings], dim=2)
         # rel_repr = torch.cat([entity_pairs_heads, rel_ctx, entity_pairs_tails], dim=2)
-        rel_repr = torch.cat([entity_pairs_heads, attention_rel_ctx, entity_pairs_tails], dim=2)   
+        # rel_repr = torch.cat([entity_pairs_heads, attention_rel_ctx, entity_pairs_tails], dim=2)   
+        rel_repr = torch.cat([entity_pairs_heads, rel_ctx_attentionWithCLS, entity_pairs_tails], dim=2) # 连接(头实体表示, 实体交互局部注意力表示+CLS表示, 尾实体表示)
 
         rel_repr = self.dropout(rel_repr)
 
