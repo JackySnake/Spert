@@ -110,15 +110,23 @@ class SpERTTrainer(BaseTrainer):
         # create optimizer
         # optimizer_params = self._get_optimizer_params(model)
         # optimizer = AdamW(optimizer_params, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
-
+        # 模型不同部分使用不同的学习率
         optimizer_params_diff_part = self._get_optimizer_params_on_diff_part_with_lr(model, entity_part_lr=0.001, relation_part_lr = 0.001)
         optimizer = AdamW(optimizer_params_diff_part, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
         # create scheduler
         # torch.optim.lr_scheduler接口,是一种学习率调整策略，其中提供了基于多种epoch数目调整学习率的方法,本方法使用线性的衰减策略。
         # 用一个Schedule把原始Optimizer装饰上，然后再输入一些相关参数，然后用这个Schedule做step()。
-        scheduler = transformers.get_linear_schedule_with_warmup(optimizer,
+        # scheduler = transformers.get_linear_schedule_with_warmup(optimizer,
+        #                                                          num_warmup_steps=args.lr_warmup * updates_total,
+        #                                                          num_training_steps=updates_total)
+        scheduler = transformers.get_cosine_schedule_with_warmup(optimizer,
                                                                  num_warmup_steps=args.lr_warmup * updates_total,
                                                                  num_training_steps=updates_total)
+        # scheduler = transformers.get_cosine_with_hard_restarts_schedule_with_warmup(optimizer,
+        #                                                          num_warmup_steps=args.lr_warmup * updates_total,
+        #                                                          num_training_steps=updates_total,
+        #                                                          num_cycles = 2)
+    
         # create loss function
         rel_criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
         entity_criterion = torch.nn.CrossEntropyLoss(reduction='none')
