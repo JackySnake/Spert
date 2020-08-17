@@ -69,6 +69,24 @@ class SpERTTrainer(BaseTrainer):
         updates_epoch = train_sample_count // args.train_batch_size # 计算每个epoch 迭代的更新参数的 次数
         updates_total = updates_epoch * args.epochs # 计算总的更新参数次数
 
+        # # 分三个训练阶段，entity，relation，joint
+        # milestone = args.epochs // 3
+        # phase1_epoch = 0 # entity 
+        # phase2_epoch = milestone # relation
+        # phase3_epoch = milestone * 2 # joint
+        # # updates_epoch = train_sample_count // args.train_batch_size # 计算每个epoch 迭代的更新参数的 次数
+        # updates_total_phase1 = updates_epoch * (phase2_epoch-phase1_epoch)
+        # updates_total_phase2 = updates_epoch * (phase3_epoch - phase2_epoch)
+        # updates_total_phase3 = updates_epoch * (args.epochs - phase2_epoch)
+
+        # 分两个训练阶段，entity，relation
+        milestone = args.epochs // 2
+        phase1_epoch = 0 # entity 
+        phase2_epoch = milestone # relation
+        # updates_epoch = train_sample_count // args.train_batch_size # 计算每个epoch 迭代的更新参数的 次数
+        updates_total_phase1 = updates_epoch * (phase2_epoch-phase1_epoch)
+        updates_total_phase2 = updates_epoch * (args.epochs - phase2_epoch)
+
         validation_dataset = input_reader.get_dataset(valid_label) # 验证集
 
         self._logger.info("Updates per epoch: %s" % updates_epoch)
@@ -110,27 +128,74 @@ class SpERTTrainer(BaseTrainer):
         # create optimizer
         # optimizer_params = self._get_optimizer_params(model)
         # optimizer = AdamW(optimizer_params, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+        
         # 模型不同部分使用不同的学习率
-        optimizer_params_diff_part = self._get_optimizer_params_on_diff_part_with_lr(model, entity_part_lr=0.001, relation_part_lr = 0.001)
-        optimizer = AdamW(optimizer_params_diff_part, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+        # optimizer_params_diff_part = self._get_optimizer_params_on_diff_part_with_lr(model, entity_part_lr=0.001, relation_part_lr = 0.001)
+        
+        # optimizer_params_diff_part = self._get_optimizer_params_with_condition(model, entity_part_lr=0.001, relation_part_lr = 0.001)
+        # optimizer = AdamW(optimizer_params_diff_part, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+        
+        # # phase 1 only entity
+        # optimizer_params_diff_part_phase1 = self._get_optimizer_params_with_condition(model, entity_part_lr=0.001, relation_part_lr = 0, 
+        #                                                                                 entity_bool = True, relaiton_bool = False)
+        # optimizer_phase1 = AdamW(optimizer_params_diff_part_phase1, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+        # #phase 2 only rel
+        # optimizer_params_diff_part_phase2 = self._get_optimizer_params_with_condition(model, entity_part_lr=0, relation_part_lr = 0.001,
+        #                                                                                 entity_bool = False, relaiton_bool = True)
+        # optimizer_phase2 = AdamW(optimizer_params_diff_part_phase2, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+        # #phase 3 joint entity and rel
+        # optimizer_params_diff_part_phase3 = self._get_optimizer_params_with_condition(model, entity_part_lr=0.001, relation_part_lr = 0.001, 
+        #                                                                                 entity_bool = True, relaiton_bool = True)
+        # optimizer_phase3 = AdamW(optimizer_params_diff_part_phase3, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+
+        # phase 1 only entity
+        optimizer_params_diff_part_phase1 = self._get_optimizer_params_with_condition(model, entity_part_lr=0.001, relation_part_lr = 0, 
+                                                                                        entity_bool = True, relaiton_bool = False)
+        optimizer_phase1 = AdamW(optimizer_params_diff_part_phase1, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+        #phase 2 only rel
+        optimizer_params_diff_part_phase2 = self._get_optimizer_params_with_condition(model, entity_part_lr=args.lr, relation_part_lr = 0.001,
+                                                                                        entity_bool = True, relaiton_bool = True)
+        optimizer_phase2 = AdamW(optimizer_params_diff_part_phase2, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+
         # create scheduler
         # torch.optim.lr_scheduler接口,是一种学习率调整策略，其中提供了基于多种epoch数目调整学习率的方法,本方法使用线性的衰减策略。
         # 用一个Schedule把原始Optimizer装饰上，然后再输入一些相关参数，然后用这个Schedule做step()。
         # scheduler = transformers.get_linear_schedule_with_warmup(optimizer,
         #                                                          num_warmup_steps=args.lr_warmup * updates_total,
         #                                                          num_training_steps=updates_total)
-        scheduler = transformers.get_cosine_schedule_with_warmup(optimizer,
-                                                                 num_warmup_steps=args.lr_warmup * updates_total,
-                                                                 num_training_steps=updates_total)
+        # scheduler = transformers.get_cosine_schedule_with_warmup(optimizer,
+        #                                                          num_warmup_steps=args.lr_warmup * updates_total,
+        #                                                          num_training_steps=updates_total)
+        
         # scheduler = transformers.get_cosine_with_hard_restarts_schedule_with_warmup(optimizer,
         #                                                          num_warmup_steps=args.lr_warmup * updates_total,
         #                                                          num_training_steps=updates_total,
         #                                                          num_cycles = 2)
-    
+        
+        # scheduler in three phase
+        # scheduler_phase1 = transformers.get_cosine_schedule_with_warmup(optimizer_phase1,
+        #                                                     num_warmup_steps=args.lr_warmup * updates_total_phase1,
+        #                                                     num_training_steps=updates_total_phase1)
+        # scheduler_phase2 = transformers.get_cosine_schedule_with_warmup(optimizer_phase2,
+        #                                                     num_warmup_steps=args.lr_warmup * updates_total_phase2,
+        #                                                     num_training_steps=updates_total_phase2)
+        # scheduler_phase3 = transformers.get_cosine_schedule_with_warmup(optimizer_phase3,
+        #                                                     num_warmup_steps=args.lr_warmup * updates_total_phase3,
+        #                                                     num_training_steps=updates_total_phase3)
+
+        scheduler_phase1 = transformers.get_cosine_schedule_with_warmup(optimizer_phase1,
+                                                            num_warmup_steps=args.lr_warmup * updates_total_phase1,
+                                                            num_training_steps=updates_total_phase1)
+        scheduler_phase2 = transformers.get_cosine_schedule_with_warmup(optimizer_phase2,
+                                                            num_warmup_steps=args.lr_warmup * updates_total_phase2,
+                                                            num_training_steps=updates_total_phase2)
+
         # create loss function
         rel_criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
         entity_criterion = torch.nn.CrossEntropyLoss(reduction='none')
-        compute_loss = SpERTLoss(rel_criterion, entity_criterion, model, optimizer, scheduler, args.max_grad_norm) # 初始化Loss
+        # compute_loss = SpERTLoss(rel_criterion, entity_criterion, model, optimizer, scheduler, args.max_grad_norm) # 初始化Loss
+        optimizer = optimizer_phase1
+        compute_loss = SpERTLoss(rel_criterion, entity_criterion, model, optimizer, scheduler_phase1, args.max_grad_norm)
 
         # eval validation set
         if args.init_eval:
@@ -139,6 +204,16 @@ class SpERTTrainer(BaseTrainer):
         # train
         for epoch in range(args.epochs):
             # train epoch 
+            # 按阶段设置学习率,通过更改优化器的方式
+            if epoch == phase1_epoch: # phase 1
+                # optimizer = optimizer_params_diff_part_phase1
+                pass
+            elif epoch == phase2_epoch: # phase 1
+                optimizer = optimizer_phase2
+                compute_loss = SpERTLoss(rel_criterion, entity_criterion, model, optimizer, scheduler_phase2, args.max_grad_norm)
+            # elif epoch == phase3_epoch: # phase 1
+            #     optimizer = optimizer_phase3
+            #     compute_loss = SpERTLoss(rel_criterion, entity_criterion, model, optimizer, scheduler_phase3, args.max_grad_norm)
             # 训练每一轮
             self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
 
@@ -332,8 +407,36 @@ class SpERTTrainer(BaseTrainer):
             {'params': [p for n, p in param_optimizer if any(nd in n for nd in relation_part) and not any(nd in n for nd in no_decay)], 'lr':relation_part_lr}, # relation_part, weight_decay
             {'params': [p for n, p in param_optimizer if any(nd in n for nd in relation_part) and any(nd in n for nd in no_decay)], 'weight_decay': 0.0, 'lr':relation_part_lr} # relation_part, no_weight_decay
             ] # bert part, no weight_decay
+    
+    #按预训练模型，实体分类，关系分类三个部分，按照条件，分别设置要优化的参数和学习率
+    #返回optimizer_params，数组长度为2
+    #optimizer_params[0],dict,长度2，保存no_decay以外的参数
+    #optimizer_params[1],dict,长度2，保存no_decay的参数
+    def _get_optimizer_params_with_condition(self, model, entity_part_lr, relation_part_lr, entity_bool=True, relaiton_bool=True):
+        param_optimizer = list(model.named_parameters())
+        no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+        entity_part = ['lstm_layer', 'entity_global_map','entity_classifier','size_embeddings']
+        relation_part = ['entity_head_linear', 'entity_tail_linear','rel_classifier']
+        optimizer_params = [
+            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay) and 'bert' in n], # bert part, weight_decay
+             'weight_decay': self.args.weight_decay},
+            {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay) and 'bert' in n], 'weight_decay': 0.0}] # bert part, no_weight_decay
+        
+        if entity_bool: 
+            # entity_part, weight_decay
+            optimizer_params.append({'params': [p for n, p in param_optimizer if any(nd in n for nd in entity_part) and not any(nd in n for nd in no_decay)], 'lr':entity_part_lr})
+            # entity_part, no_weight_decay
+            optimizer_params.append({'params': [p for n, p in param_optimizer if any(nd in n for nd in entity_part) and any(nd in n for nd in no_decay)], 'weight_decay': 0.0, 'lr':entity_part_lr})
+        # else:
+        #     pass
 
-
+        if relaiton_bool:
+            # relation_part, weight_decay
+            optimizer_params.append({'params': [p for n, p in param_optimizer if any(nd in n for nd in relation_part) and not any(nd in n for nd in no_decay)], 'lr':relation_part_lr})
+            # relation_part, no_weight_decay
+            optimizer_params.append({'params': [p for n, p in param_optimizer if any(nd in n for nd in relation_part) and any(nd in n for nd in no_decay)], 'weight_decay': 0.0, 'lr':relation_part_lr})
+        # else:
+        #     pass
         return optimizer_params
 
     def _log_train(self, optimizer: Optimizer, loss: float, epoch: int,
