@@ -62,13 +62,28 @@ class SpERT(BertPreTrainedModel):
         # self.entity_cls_mapping = nn.Linear(config.hidden_size, config.hidden_size) # 对全局表示进一步特征变换
         self.entity_head_linear = nn.Linear(config.hidden_size, config.hidden_size) # 头实体变换，待与尾实体点乘
         self.entity_head_activation = nn.ReLU() 
-        self.entity_head_linear2 = nn.Linear(config.hidden_size, config.hidden_size) # 头实体变换，待与尾实体点乘
+        # self.entity_head_linear2 = nn.Linear(config.hidden_size, config.hidden_size) # 头实体变换，待与尾实体点乘
+        # self.entity_head_activation2 = nn.ReLU() 
+        # self.entity_head_linear3 = nn.Linear(config.hidden_size, config.hidden_size) # 头实体变换，待与尾实体点乘
+
         self.entity_tail_linear = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘 
         self.entity_tail_activation = nn.ReLU() 
-        self.entity_tail_linear2 = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘 
+        # self.entity_tail_linear2 = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘
+        # self.entity_tail_activation2 = nn.ReLU() 
+        # self.entity_tail_linear3 = nn.Linear(config.hidden_size, config.hidden_size) # 尾实体变换，待与头实体点乘 
         # self.rel_cls_map = nn.Linear(config.hidden_size, config.hidden_size)
 
-        self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类
+        # 头尾实体共享解码share entity 
+        # self.entity_head_tail_linear = nn.Linear(config.hidden_size, config.hidden_size)
+        # self.entity_head_tail_activation = nn.ReLU() 
+        
+        self.entity_head_tail_share = nn.Linear(config.hidden_size, config.hidden_size) 
+
+        # self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types)
+        # 多层分类器
+        self.rel_classifier = nn.Linear(config.hidden_size * 3, config.hidden_size) # 关系分类
+        self.rel_classifier_ac = nn.ReLU()
+        self.rel_classifier2 = nn.Linear(config.hidden_size, relation_types)
        
         # self.rel_classifier = nn.Linear(config.hidden_size * 3, relation_types) # 关系分类 version0.1，头尾实体表示+[CLS]
         
@@ -109,10 +124,15 @@ class SpERT(BertPreTrainedModel):
         nn.init.xavier_normal_(self.entity_global_map.weight)
         nn.init.xavier_normal_(self.entity_classifier.weight)
         nn.init.xavier_normal_(self.entity_head_linear.weight)
-        nn.init.xavier_normal_(self.entity_head_linear2.weight)
+        # nn.init.xavier_normal_(self.entity_head_linear2.weight)
+        # nn.init.xavier_normal_(self.entity_head_linear3.weight)
         nn.init.xavier_normal_(self.entity_tail_linear.weight)
-        nn.init.xavier_normal_(self.entity_head_linear2.weight)
+        # nn.init.xavier_normal_(self.entity_head_linear2.weight)
+        # nn.init.xavier_normal_(self.entity_head_linear3.weight)
+        # nn.init.xavier_normal_(self.entity_head_tail_linear.weight)
+        nn.init.xavier_normal_(self.entity_head_tail_share.weight)
         nn.init.xavier_normal_(self.rel_classifier.weight)
+        nn.init.xavier_normal_(self.rel_classifier2.weight)
 
         if freeze_transformer:
             print("Freeze transformer weights")
@@ -333,18 +353,30 @@ class SpERT(BertPreTrainedModel):
         # # set the context vector of neighboring or adjacent entity candidates to zero
         # rel_ctx[rel_masks.to(torch.uint8).any(-1) == 0] = 0 # [batchsize, rel_sample_num, embeddingsize]
 
+        # 通过mask的方式，只选择实体中间子句的表示
         h = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1) # h按关系数目扩展(repeat)
         m = rel_masks.float().unsqueeze(-1) ## OK
         rel_ctx = m * h ## 将实体中间以外的表示全部置 rel_ctx:[batch_size,relation_samples,sentence_length, embedding_size]
-        
+        # 全局表示
+        # rel_ctx = h.unsqueeze(1).repeat(1, max(min(relations.shape[1], self._max_pairs), 1), 1, 1) # h按关系数目扩展(repeat)
 
         entity_pairs_heads_map = self.entity_head_linear(entity_pairs_heads) ## 头实体特征提取 [batch_size, relation样本数, embedding_size]
         entity_pairs_heads_map = self.entity_head_activation(entity_pairs_heads_map)
-        entity_pairs_heads_map = self.entity_head_linear2(entity_pairs_heads_map)
+        # entity_pairs_heads_map = self.entity_head_linear2(entity_pairs_heads_map)
+        # entity_pairs_heads_map = self.entity_head_activation2(entity_pairs_heads_map)
+        # entity_pairs_heads_map = self.entity_head_linear3(entity_pairs_heads_map)
+        # entity_pairs_heads_map = self.entity_head_tail_linear(entity_pairs_heads) # 头尾实体全共享
+        # entity_pairs_heads_map = self.entity_head_tail_activation(entity_pairs_heads_map)
+        entity_pairs_heads_map = self.entity_head_tail_share(entity_pairs_heads_map) # 共享一层
 
         entity_pairs_tails_map = self.entity_tail_linear(entity_pairs_tails) ## 尾实体特征提取 [batch_size, relation样本数, embedding_size]
         entity_pairs_tails_map = self.entity_tail_activation(entity_pairs_tails_map)
-        entity_pairs_tails_map = self.entity_head_linear2(entity_pairs_tails_map)
+        # entity_pairs_tails_map = self.entity_tail_linear2(entity_pairs_tails_map)
+        # entity_pairs_tails_map = self.entity_tail_activation2(entity_pairs_tails_map)
+        # entity_pairs_tails_map = self.entity_tail_linear3(entity_pairs_tails_map)
+        # entity_pairs_tails_map = self.entity_head_tail_linear(entity_pairs_tails) # 头尾实体全共享
+        # entity_pairs_tails_map = self.entity_head_tail_activation(entity_pairs_tails_map)
+        entity_pairs_tails_map = self.entity_head_tail_share(entity_pairs_tails_map) # 共享一层
 
         entity_pair_reaction = entity_pairs_heads_map * entity_pairs_tails_map ## 点乘，实体交互特征，用来计算attention权重 [batch_size, relation样本数, embedding_size]
 
@@ -365,8 +397,12 @@ class SpERT(BertPreTrainedModel):
 
         rel_repr = self.dropout(rel_repr)
 
-        # classify relation candidates
-        chunk_rel_logits = self.rel_classifier(rel_repr)
+        # classify relation 
+        # chunk_rel_logits = self.rel_classifier(rel_repr)
+        # classify relation - 多层
+        chunk_rel_logits_hidden = self.rel_classifier(rel_repr)
+        chunk_rel_logits_hidden = self.rel_classifier_ac(chunk_rel_logits_hidden)
+        chunk_rel_logits = self.rel_classifier2(chunk_rel_logits_hidden)
 
         # 关系分类 version0.2
         # rel_repr_hidden = self.rel_classifier_hidden(rel_repr)
